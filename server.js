@@ -118,18 +118,72 @@ const server = http.createServer((req, res) => {
     res.writeHead(200, { "Content-Type": "text/html" });
     res.end(`
       <html>
-        <body style="background:#5b1f9e; color:white; font-family:sans-serif; text-align:center; padding-top:40px;">
+        <head>
+          <style>
+            body { background:#5b1f9e; color:white; font-family:sans-serif; text-align:center; padding-top:20px; margin:0; }
+
+            /* Full-screen call overlay */
+            #callArea {
+              display: none;
+              position: fixed;
+              top: 0; left: 0; right: 0; bottom: 0;
+              background: #000;
+              z-index: 999;
+            }
+            #bigVideo {
+              width: 100%;
+              height: 100%;
+              object-fit: cover;
+              background: #111;
+            }
+            #smallVideo {
+              position: absolute;
+              width: 110px;
+              height: 150px;
+              object-fit: cover;
+              top: 20px;
+              right: 20px;
+              border-radius: 10px;
+              border: 2px solid white;
+              background: #333;
+              box-shadow: 0 2px 8px rgba(0,0,0,0.5);
+            }
+            #callStatus {
+              position: absolute;
+              top: 20px; left: 20px;
+              color: #ffd966;
+              font-size: 15px;
+              background: rgba(0,0,0,0.4);
+              padding: 4px 10px;
+              border-radius: 6px;
+            }
+            #hangUpBtn {
+              position: absolute;
+              bottom: 30px;
+              left: 50%;
+              transform: translateX(-50%);
+              background: #e33;
+              color: white;
+              border: none;
+              padding: 14px 28px;
+              border-radius: 30px;
+              font-size: 16px;
+            }
+          </style>
+        </head>
+        <body>
           <h2>Chat with ${withBuddy}</h2>
 
           <div>
             <button onclick="startCall()" style="padding:8px 14px; margin:4px;">Call</button>
-            <button onclick="hangUp()" style="padding:8px 14px; margin:4px;">Hang Up</button>
           </div>
 
-          <div id="callArea" style="display:none; margin-top:10px;">
-            <video id="localVideo" autoplay playsinline muted style="width:140px; height:105px; background:black; border-radius:6px;"></video>
-            <video id="remoteVideo" autoplay playsinline style="width:140px; height:105px; background:black; border-radius:6px;"></video>
-            <p id="callStatus" style="color:#ffd966;"></p>
+          <!-- Full screen call overlay -->
+          <div id="callArea">
+            <video id="bigVideo" autoplay playsinline></video>
+            <video id="smallVideo" autoplay playsinline muted onclick="swapVideos()"></video>
+            <p id="callStatus"></p>
+            <button id="hangUpBtn" onclick="hangUp()">Hang Up</button>
           </div>
 
           <div id="incomingCall" style="display:none; background:white; color:black; padding:10px; width:250px; margin:10px auto; border-radius:6px;">
@@ -173,6 +227,7 @@ const server = http.createServer((req, res) => {
             // ---- Video/audio calling ----
             let localStream = null;
             let peerConnection = null;
+            let bigIsRemote = true; // tracks which video is currently shown big
 
             const rtcConfig = {
               iceServers: [{ urls: "stun:stun.l.google.com:19302" }]
@@ -181,7 +236,6 @@ const server = http.createServer((req, res) => {
             async function getLocalStream() {
               if (!localStream) {
                 localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
-                document.getElementById("localVideo").srcObject = localStream;
               }
               return localStream;
             }
@@ -196,17 +250,25 @@ const server = http.createServer((req, res) => {
               };
 
               pc.ontrack = (event) => {
-                document.getElementById("remoteVideo").srcObject = event.streams[0];
+                document.getElementById("bigVideo").srcObject = event.streams[0];
+                bigIsRemote = true;
               };
 
               return pc;
             }
 
-            async function startCall() {
+            function showCallScreen() {
               document.getElementById("callArea").style.display = "block";
+            }
+
+            async function startCall() {
+              showCallScreen();
               document.getElementById("callStatus").textContent = "Calling " + withBuddy + "...";
 
               const stream = await getLocalStream();
+              document.getElementById("smallVideo").srcObject = stream;
+              bigIsRemote = true;
+
               peerConnection = createPeerConnection();
               stream.getTracks().forEach((track) => peerConnection.addTrack(track, stream));
 
@@ -224,10 +286,13 @@ const server = http.createServer((req, res) => {
 
             async function answerCall() {
               document.getElementById("incomingCall").style.display = "none";
-              document.getElementById("callArea").style.display = "block";
+              showCallScreen();
               document.getElementById("callStatus").textContent = "In call with " + withBuddy;
 
               const stream = await getLocalStream();
+              document.getElementById("smallVideo").srcObject = stream;
+              bigIsRemote = true;
+
               peerConnection = createPeerConnection();
               stream.getTracks().forEach((track) => peerConnection.addTrack(track, stream));
 
@@ -257,13 +322,25 @@ const server = http.createServer((req, res) => {
               }
             });
 
+            // Tap the small corner video to swap which one is big (WhatsApp-style)
+            function swapVideos() {
+              const big = document.getElementById("bigVideo");
+              const small = document.getElementById("smallVideo");
+              const bigStream = big.srcObject;
+              const smallStream = small.srcObject;
+              big.srcObject = smallStream;
+              small.srcObject = bigStream;
+              bigIsRemote = !bigIsRemote;
+            }
+
             function hangUp() {
               if (peerConnection) {
                 peerConnection.close();
                 peerConnection = null;
               }
               document.getElementById("callArea").style.display = "none";
-              document.getElementById("remoteVideo").srcObject = null;
+              document.getElementById("bigVideo").srcObject = null;
+              document.getElementById("smallVideo").srcObject = null;
             }
           </script>
         </body>

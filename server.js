@@ -17,11 +17,26 @@ db.exec(`
   )
 `);
 
+// Add new columns for file/image sharing if this is an older database
+try { db.exec("ALTER TABLE messages ADD COLUMN type TEXT DEFAULT 'text'"); } catch (e) {}
+try { db.exec("ALTER TABLE messages ADD COLUMN file_name TEXT"); } catch (e) {}
+try { db.exec("ALTER TABLE messages ADD COLUMN file_data TEXT"); } catch (e) {}
+
+function renderMessageHTML(m) {
+  if (m.type === "image") {
+    return `<p><b>${m.from_user}:</b><br/><img src="${m.file_data}" style="max-width:220px; border-radius:6px; margin-top:4px;" /></p>`;
+  } else if (m.type === "file") {
+    return `<p><b>${m.from_user}:</b><br/><a href="${m.file_data}" download="${m.file_name}">📎 ${m.file_name}</a></p>`;
+  } else {
+    return `<p><b>${m.from_user}:</b> ${m.text}</p>`;
+  }
+}
+
 const server = http.createServer((req, res) => {
   const parsedUrl = url.parse(req.url, true);
 
   if (parsedUrl.pathname === "/") {
-    res.writeHead(200, { "Content-Type": "text/html" });
+    res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
     res.end(`
       <html>
         <body style="background:#5b1f9e; color:white; font-family:sans-serif; text-align:center; padding-top:100px;">
@@ -51,7 +66,7 @@ const server = http.createServer((req, res) => {
       .map((u) => `<li><a style="color:#ffd966;" href="/chat?me=${name}&with=${u.name}">${u.name}</a></li>`)
       .join("");
 
-    res.writeHead(200, { "Content-Type": "text/html" });
+    res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
     res.end(`
       <html>
         <body style="background:#5b1f9e; color:white; font-family:sans-serif; text-align:center; padding-top:80px;">
@@ -68,29 +83,24 @@ const server = http.createServer((req, res) => {
   } else if (parsedUrl.pathname === "/camera-test") {
     const name = parsedUrl.query.name || "";
 
-    res.writeHead(200, { "Content-Type": "text/html" });
+    res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
     res.end(`
       <html>
         <body style="background:#5b1f9e; color:white; font-family:sans-serif; text-align:center; padding-top:60px;">
           <h2>Camera & Mic Test</h2>
-          <p>This checks that your browser can access your camera and microphone.</p>
-
           <video id="preview" autoplay playsinline muted style="width:320px; height:240px; background:black; border-radius:8px;"></video>
           <br /><br />
           <button onclick="startPreview()" style="padding:10px 20px; font-size:16px;">Start Camera & Mic</button>
           <p id="status" style="margin-top:15px;"></p>
-
           <br />
           <a style="color:#ffd966;" href="/welcome?name=${name}">Back to Welcome</a>
-
           <script>
             async function startPreview() {
               const statusEl = document.getElementById("status");
               statusEl.textContent = "Asking for permission...";
               try {
                 const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
-                const video = document.getElementById("preview");
-                video.srcObject = stream;
+                document.getElementById("preview").srcObject = stream;
                 statusEl.textContent = "Camera and mic are working!";
               } catch (err) {
                 statusEl.textContent = "Could not access camera/mic: " + err.message;
@@ -111,64 +121,30 @@ const server = http.createServer((req, res) => {
       )
       .all(me, withBuddy, withBuddy, me);
 
-    const messagesHTML = conversation
-      .map((m) => `<p><b>${m.from_user}:</b> ${m.text}</p>`)
-      .join("");
+    const messagesHTML = conversation.map(renderMessageHTML).join("");
 
-    res.writeHead(200, { "Content-Type": "text/html" });
+    res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
     res.end(`
       <html>
         <head>
           <style>
             body { background:#5b1f9e; color:white; font-family:sans-serif; text-align:center; padding-top:20px; margin:0; }
 
-            /* Full-screen call overlay */
-            #callArea {
-              display: none;
-              position: fixed;
-              top: 0; left: 0; right: 0; bottom: 0;
-              background: #000;
-              z-index: 999;
-            }
-            #bigVideo {
-              width: 100%;
-              height: 100%;
-              object-fit: cover;
-              background: #111;
-            }
-            #smallVideo {
-              position: absolute;
-              width: 110px;
-              height: 150px;
-              object-fit: cover;
-              top: 20px;
-              right: 20px;
-              border-radius: 10px;
-              border: 2px solid white;
-              background: #333;
-              box-shadow: 0 2px 8px rgba(0,0,0,0.5);
-            }
-            #callStatus {
-              position: absolute;
-              top: 20px; left: 20px;
-              color: #ffd966;
-              font-size: 15px;
-              background: rgba(0,0,0,0.4);
-              padding: 4px 10px;
-              border-radius: 6px;
-            }
-            #hangUpBtn {
-              position: absolute;
-              bottom: 30px;
-              left: 50%;
-              transform: translateX(-50%);
-              background: #e33;
-              color: white;
-              border: none;
-              padding: 14px 28px;
-              border-radius: 30px;
-              font-size: 16px;
-            }
+            #callArea { display:none; position:fixed; top:0; left:0; right:0; bottom:0; background:#000; z-index:999; }
+            #bigVideo { width:100%; height:100%; object-fit:cover; background:#111; }
+            #smallVideo { position:absolute; width:110px; height:150px; object-fit:cover; top:20px; right:20px; border-radius:10px; border:2px solid white; background:#333; box-shadow:0 2px 8px rgba(0,0,0,0.5); }
+            #camOffOverlay { display:none; position:absolute; width:110px; height:150px; top:20px; right:20px; border-radius:10px; background:#222; color:white; font-size:12px; align-items:center; justify-content:center; text-align:center; }
+            #callStatus { position:absolute; top:20px; left:20px; color:#ffd966; font-size:15px; background:rgba(0,0,0,0.4); padding:4px 10px; border-radius:6px; }
+            #callControls { position:absolute; bottom:30px; left:50%; transform:translateX(-50%); display:flex; gap:14px; }
+            .callBtn { border:none; padding:14px 22px; border-radius:30px; font-size:15px; color:white; }
+            #hangUpBtn { background:#e33; }
+            #muteBtn, #camBtn { background:#444; }
+            .callBtn.off { background:#e33; }
+
+            #incomingCall { display:none; background:white; color:black; padding:14px; width:250px; margin:10px auto; border-radius:8px; }
+
+            #attachBar { display:flex; justify-content:center; gap:6px; margin-top:15px; }
+            #fileInput { display:none; }
           </style>
         </head>
         <body>
@@ -178,26 +154,33 @@ const server = http.createServer((req, res) => {
             <button onclick="startCall()" style="padding:8px 14px; margin:4px;">Call</button>
           </div>
 
-          <!-- Full screen call overlay -->
           <div id="callArea">
             <video id="bigVideo" autoplay playsinline></video>
             <video id="smallVideo" autoplay playsinline muted onclick="swapVideos()"></video>
+            <div id="camOffOverlay">Camera off</div>
             <p id="callStatus"></p>
-            <button id="hangUpBtn" onclick="hangUp()">Hang Up</button>
+            <div id="callControls">
+              <button id="muteBtn" class="callBtn" onclick="toggleMute()">Mute</button>
+              <button id="camBtn" class="callBtn" onclick="toggleCamera()">Camera Off</button>
+              <button id="hangUpBtn" class="callBtn" onclick="hangUp(true)">Hang Up</button>
+            </div>
           </div>
 
-          <div id="incomingCall" style="display:none; background:white; color:black; padding:10px; width:250px; margin:10px auto; border-radius:6px;">
+          <div id="incomingCall">
             <p>Incoming call from <b id="callerName"></b></p>
             <button onclick="answerCall()">Answer</button>
             <button onclick="rejectCall()">Reject</button>
           </div>
 
-          <div id="messages" style="background:white; color:black; width:300px; margin:15px auto; padding:10px; min-height:150px; text-align:left; border-radius:6px;">
+          <div id="messages" style="background:white; color:black; width:300px; margin:15px auto; padding:10px; min-height:150px; text-align:left; border-radius:6px; overflow-y:auto; max-height:300px;">
             ${messagesHTML || "<i>No messages yet</i>"}
           </div>
-          <div style="margin-top:15px;">
-            <input id="text" placeholder="Type a message" style="padding:8px; width:200px;" />
+
+          <div id="attachBar">
+            <input id="text" placeholder="Type a message" style="padding:8px; width:170px;" />
             <button onclick="sendMessage()" style="padding:8px 12px;">Send</button>
+            <button onclick="document.getElementById('fileInput').click()" style="padding:8px 12px;">📎</button>
+            <input type="file" id="fileInput" onchange="sendFile()" />
           </div>
 
           <script src="/socket.io/socket.io.js"></script>
@@ -211,27 +194,100 @@ const server = http.createServer((req, res) => {
 
             // ---- Chat messaging ----
             socket.on("chat message", (msg) => {
-              const box = document.getElementById("messages");
-              box.innerHTML += "<p><b>" + msg.from + ":</b> " + msg.text + "</p>";
-              box.scrollTop = box.scrollHeight;
+              addMessageToBox(msg);
             });
+
+            function addMessageToBox(msg) {
+              const box = document.getElementById("messages");
+              let html = "";
+              if (msg.type === "image") {
+                html = "<p><b>" + msg.from + ":</b><br/><img src=\\"" + msg.fileData + "\\" style=\\"max-width:220px; border-radius:6px; margin-top:4px;\\" /></p>";
+              } else if (msg.type === "file") {
+                html = "<p><b>" + msg.from + ":</b><br/><a href=\\"" + msg.fileData + "\\" download=\\"" + msg.fileName + "\\">\uD83D\uDCCE " + msg.fileName + "</a></p>";
+              } else {
+                html = "<p><b>" + msg.from + ":</b> " + msg.text + "</p>";
+              }
+              box.innerHTML += html;
+              box.scrollTop = box.scrollHeight;
+            }
 
             function sendMessage() {
               const textBox = document.getElementById("text");
               const text = textBox.value;
               if (!text) return;
-              socket.emit("chat message", { room, from: me, to: withBuddy, text });
+              socket.emit("chat message", { room, from: me, to: withBuddy, type: "text", text });
               textBox.value = "";
+            }
+
+            function sendFile() {
+              const input = document.getElementById("fileInput");
+              const file = input.files[0];
+              if (!file) return;
+
+              if (file.size > 3 * 1024 * 1024) {
+                alert("Please choose a file under 3MB for now.");
+                input.value = "";
+                return;
+              }
+
+              const reader = new FileReader();
+              reader.onload = () => {
+                const fileData = reader.result; // base64 data URL
+                const type = file.type.startsWith("image/") ? "image" : "file";
+                socket.emit("chat message", {
+                  room, from: me, to: withBuddy, type,
+                  fileName: file.name, fileData
+                });
+              };
+              reader.readAsDataURL(file);
+              input.value = "";
             }
 
             // ---- Video/audio calling ----
             let localStream = null;
             let peerConnection = null;
-            let bigIsRemote = true; // tracks which video is currently shown big
+            let ringtone = null;
+            let muted = false;
+            let camOff = false;
 
             const rtcConfig = {
-              iceServers: [{ urls: "stun:stun.l.google.com:19302" }]
+              iceServers: [
+                { urls: "stun:stun.l.google.com:19302" },
+                { urls: "turn:openrelay.metered.ca:80", username: "openrelayproject", credential: "openrelayproject" },
+                { urls: "turn:openrelay.metered.ca:443", username: "openrelayproject", credential: "openrelayproject" },
+                { urls: "turn:openrelay.metered.ca:443?transport=tcp", username: "openrelayproject", credential: "openrelayproject" }
+              ]
             };
+
+            function playRingtone() {
+              stopRingtone();
+              const AudioCtx = window.AudioContext || window.webkitAudioContext;
+              const ctx = new AudioCtx();
+              let stopped = false;
+
+              function beep() {
+                if (stopped) return;
+                const osc = ctx.createOscillator();
+                const gain = ctx.createGain();
+                osc.frequency.value = 480;
+                osc.connect(gain);
+                gain.connect(ctx.destination);
+                gain.gain.setValueAtTime(0.15, ctx.currentTime);
+                osc.start();
+                osc.stop(ctx.currentTime + 0.4);
+              }
+
+              beep();
+              const interval = setInterval(beep, 1200);
+              ringtone = { stop: () => { stopped = true; clearInterval(interval); ctx.close(); } };
+            }
+
+            function stopRingtone() {
+              if (ringtone) {
+                ringtone.stop();
+                ringtone = null;
+              }
+            }
 
             async function getLocalStream() {
               if (!localStream) {
@@ -242,18 +298,16 @@ const server = http.createServer((req, res) => {
 
             function createPeerConnection() {
               const pc = new RTCPeerConnection(rtcConfig);
-
               pc.onicecandidate = (event) => {
                 if (event.candidate) {
                   socket.emit("ice-candidate", { room, candidate: event.candidate });
                 }
               };
-
               pc.ontrack = (event) => {
                 document.getElementById("bigVideo").srcObject = event.streams[0];
-                bigIsRemote = true;
+                stopRingtone();
+                document.getElementById("callStatus").textContent = "In call with " + withBuddy;
               };
-
               return pc;
             }
 
@@ -264,10 +318,10 @@ const server = http.createServer((req, res) => {
             async function startCall() {
               showCallScreen();
               document.getElementById("callStatus").textContent = "Calling " + withBuddy + "...";
+              playRingtone();
 
               const stream = await getLocalStream();
               document.getElementById("smallVideo").srcObject = stream;
-              bigIsRemote = true;
 
               peerConnection = createPeerConnection();
               stream.getTracks().forEach((track) => peerConnection.addTrack(track, stream));
@@ -282,16 +336,23 @@ const server = http.createServer((req, res) => {
               window.incomingOffer = offer;
               document.getElementById("callerName").textContent = from;
               document.getElementById("incomingCall").style.display = "block";
+              playRingtone();
+            });
+
+            socket.on("call-busy", () => {
+              stopRingtone();
+              document.getElementById("callArea").style.display = "none";
+              alert(withBuddy + " is already on another call.");
             });
 
             async function answerCall() {
+              stopRingtone();
               document.getElementById("incomingCall").style.display = "none";
               showCallScreen();
               document.getElementById("callStatus").textContent = "In call with " + withBuddy;
 
               const stream = await getLocalStream();
               document.getElementById("smallVideo").srcObject = stream;
-              bigIsRemote = true;
 
               peerConnection = createPeerConnection();
               stream.getTracks().forEach((track) => peerConnection.addTrack(track, stream));
@@ -304,25 +365,29 @@ const server = http.createServer((req, res) => {
             }
 
             function rejectCall() {
+              stopRingtone();
               document.getElementById("incomingCall").style.display = "none";
+              socket.emit("call-rejected", { room });
             }
 
+            socket.on("call-rejected", () => {
+              stopRingtone();
+              document.getElementById("callArea").style.display = "none";
+              alert(withBuddy + " declined the call.");
+            });
+
             socket.on("call-answered", async ({ answer }) => {
+              stopRingtone();
               document.getElementById("callStatus").textContent = "In call with " + withBuddy;
               await peerConnection.setRemoteDescription(answer);
             });
 
             socket.on("ice-candidate-received", async ({ candidate }) => {
               if (peerConnection) {
-                try {
-                  await peerConnection.addIceCandidate(candidate);
-                } catch (err) {
-                  console.log("Error adding ICE candidate", err);
-                }
+                try { await peerConnection.addIceCandidate(candidate); } catch (err) {}
               }
             });
 
-            // Tap the small corner video to swap which one is big (WhatsApp-style)
             function swapVideos() {
               const big = document.getElementById("bigVideo");
               const small = document.getElementById("smallVideo");
@@ -330,18 +395,51 @@ const server = http.createServer((req, res) => {
               const smallStream = small.srcObject;
               big.srcObject = smallStream;
               small.srcObject = bigStream;
-              bigIsRemote = !bigIsRemote;
             }
 
-            function hangUp() {
+            function toggleMute() {
+              if (!localStream) return;
+              muted = !muted;
+              localStream.getAudioTracks().forEach((t) => (t.enabled = !muted));
+              document.getElementById("muteBtn").textContent = muted ? "Unmute" : "Mute";
+              document.getElementById("muteBtn").classList.toggle("off", muted);
+            }
+
+            function toggleCamera() {
+              if (!localStream) return;
+              camOff = !camOff;
+              localStream.getVideoTracks().forEach((t) => (t.enabled = !camOff));
+              document.getElementById("camBtn").textContent = camOff ? "Camera On" : "Camera Off";
+              document.getElementById("camBtn").classList.toggle("off", camOff);
+              document.getElementById("camOffOverlay").style.display = camOff ? "flex" : "none";
+            }
+
+            function hangUp(notifyOther) {
+              stopRingtone();
               if (peerConnection) {
                 peerConnection.close();
                 peerConnection = null;
               }
+              if (localStream) {
+                localStream.getTracks().forEach((t) => t.stop());
+                localStream = null;
+              }
               document.getElementById("callArea").style.display = "none";
               document.getElementById("bigVideo").srcObject = null;
               document.getElementById("smallVideo").srcObject = null;
+              document.getElementById("incomingCall").style.display = "none";
+              muted = false;
+              camOff = false;
+              document.getElementById("muteBtn").textContent = "Mute";
+              document.getElementById("camBtn").textContent = "Camera Off";
+              if (notifyOther) {
+                socket.emit("hang-up", { room });
+              }
             }
+
+            socket.on("hang-up", () => {
+              hangUp(false);
+            });
           </script>
         </body>
       </html>
@@ -353,7 +451,12 @@ const server = http.createServer((req, res) => {
   }
 });
 
-const io = new Server(server);
+const io = new Server(server, {
+  maxHttpBufferSize: 5 * 1024 * 1024 // allow larger messages for file sharing
+});
+
+const ringingRooms = new Set();
+const activeCallRooms = new Set();
 
 io.on("connection", (socket) => {
   socket.on("join", ({ room }) => {
@@ -361,25 +464,48 @@ io.on("connection", (socket) => {
   });
 
   socket.on("chat message", (msg) => {
-    db.prepare("INSERT INTO messages (from_user, to_user, text) VALUES (?, ?, ?)").run(
+    db.prepare(
+      "INSERT INTO messages (from_user, to_user, text, type, file_name, file_data) VALUES (?, ?, ?, ?, ?, ?)"
+    ).run(
       msg.from,
       msg.to,
-      msg.text
+      msg.text || null,
+      msg.type || "text",
+      msg.fileName || null,
+      msg.fileData || null
     );
     io.to(msg.room).emit("chat message", msg);
   });
 
   // ---- Call signaling ----
   socket.on("call-user", ({ room, from, offer }) => {
+    if (ringingRooms.has(room) || activeCallRooms.has(room)) {
+      socket.emit("call-busy");
+      return;
+    }
+    ringingRooms.add(room);
     socket.to(room).emit("incoming-call", { from, offer });
   });
 
   socket.on("make-answer", ({ room, answer }) => {
+    ringingRooms.delete(room);
+    activeCallRooms.add(room);
     socket.to(room).emit("call-answered", { answer });
+  });
+
+  socket.on("call-rejected", ({ room }) => {
+    ringingRooms.delete(room);
+    socket.to(room).emit("call-rejected");
   });
 
   socket.on("ice-candidate", ({ room, candidate }) => {
     socket.to(room).emit("ice-candidate-received", { candidate });
+  });
+
+  socket.on("hang-up", ({ room }) => {
+    ringingRooms.delete(room);
+    activeCallRooms.delete(room);
+    socket.to(room).emit("hang-up");
   });
 });
 

@@ -424,17 +424,18 @@ const server = http.createServer((req, res) => {
               if (!localStream) return;
               currentFacingMode = currentFacingMode === "user" ? "environment" : "user";
 
+              // Stop and release the old camera FIRST, before asking for the new one
+              const oldVideoTrack = localStream.getVideoTracks()[0];
+              if (oldVideoTrack) {
+                oldVideoTrack.stop();
+                localStream.removeTrack(oldVideoTrack);
+              }
+
               try {
                 const newVideoStream = await navigator.mediaDevices.getUserMedia({
                   video: { facingMode: currentFacingMode }
                 });
                 const newVideoTrack = newVideoStream.getVideoTracks()[0];
-
-                const oldVideoTrack = localStream.getVideoTracks()[0];
-                if (oldVideoTrack) {
-                  localStream.removeTrack(oldVideoTrack);
-                  oldVideoTrack.stop();
-                }
                 localStream.addTrack(newVideoTrack);
 
                 if (peerConnection) {
@@ -444,6 +445,7 @@ const server = http.createServer((req, res) => {
                   if (videoSender) await videoSender.replaceTrack(newVideoTrack);
                 }
 
+                document.getElementById("smallVideo").srcObject = null;
                 document.getElementById("smallVideo").srcObject = localStream;
               } catch (err) {
                 alert("Could not switch camera: " + err.message);

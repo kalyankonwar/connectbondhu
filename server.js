@@ -162,6 +162,7 @@ const server = http.createServer((req, res) => {
             <div id="callControls">
               <button id="muteBtn" class="callBtn" onclick="toggleMute()">Mute</button>
               <button id="camBtn" class="callBtn" onclick="toggleCamera()">Camera Off</button>
+              <button id="switchCamBtn" class="callBtn" onclick="switchCamera()">Switch Cam</button>
               <button id="hangUpBtn" class="callBtn" onclick="hangUp(true)">Hang Up</button>
             </div>
           </div>
@@ -177,10 +178,14 @@ const server = http.createServer((req, res) => {
           </div>
 
           <div id="attachBar">
-            <input id="text" placeholder="Type a message" style="padding:8px; width:170px;" />
-            <button onclick="sendMessage()" style="padding:8px 12px;">Send</button>
-            <button onclick="document.getElementById('fileInput').click()" style="padding:8px 12px;">📎</button>
-            <input type="file" id="fileInput" onchange="sendFile()" />
+            <input id="text" placeholder="Type a message" style="padding:8px; width:130px;" />
+            <button onclick="sendMessage()" style="padding:8px 10px;">Send</button>
+            <button onclick="document.getElementById('backCameraInput').click()" style="padding:8px 8px;">Back Cam</button>
+            <button onclick="document.getElementById('frontCameraInput').click()" style="padding:8px 8px;">Front Cam</button>
+            <button onclick="document.getElementById('fileInput').click()" style="padding:8px 8px;">File</button>
+            <input type="file" id="backCameraInput" accept="image/*" capture="environment" onchange="sendFile('backCameraInput')" style="display:none;" />
+            <input type="file" id="frontCameraInput" accept="image/*" capture="user" onchange="sendFile('frontCameraInput')" style="display:none;" />
+            <input type="file" id="fileInput" onchange="sendFile('fileInput')" style="display:none;" />
           </div>
 
           <script src="/socket.io/socket.io.js"></script>
@@ -219,8 +224,8 @@ const server = http.createServer((req, res) => {
               textBox.value = "";
             }
 
-            function sendFile() {
-              const input = document.getElementById("fileInput");
+            function sendFile(inputId) {
+              const input = document.getElementById(inputId);
               const file = input.files[0];
               if (!file) return;
 
@@ -249,6 +254,7 @@ const server = http.createServer((req, res) => {
             let ringtone = null;
             let muted = false;
             let camOff = false;
+            let currentFacingMode = "user"; // starts on front camera
 
             const rtcConfig = {
               iceServers: [
@@ -412,6 +418,37 @@ const server = http.createServer((req, res) => {
               document.getElementById("camBtn").textContent = camOff ? "Camera On" : "Camera Off";
               document.getElementById("camBtn").classList.toggle("off", camOff);
               document.getElementById("camOffOverlay").style.display = camOff ? "flex" : "none";
+            }
+
+            async function switchCamera() {
+              if (!localStream) return;
+              currentFacingMode = currentFacingMode === "user" ? "environment" : "user";
+
+              try {
+                const newVideoStream = await navigator.mediaDevices.getUserMedia({
+                  video: { facingMode: currentFacingMode }
+                });
+                const newVideoTrack = newVideoStream.getVideoTracks()[0];
+
+                const oldVideoTrack = localStream.getVideoTracks()[0];
+                if (oldVideoTrack) {
+                  localStream.removeTrack(oldVideoTrack);
+                  oldVideoTrack.stop();
+                }
+                localStream.addTrack(newVideoTrack);
+
+                if (peerConnection) {
+                  const videoSender = peerConnection.getSenders().find(
+                    (s) => s.track && s.track.kind === "video"
+                  );
+                  if (videoSender) await videoSender.replaceTrack(newVideoTrack);
+                }
+
+                document.getElementById("smallVideo").srcObject = localStream;
+              } catch (err) {
+                alert("Could not switch camera: " + err.message);
+                currentFacingMode = currentFacingMode === "user" ? "environment" : "user"; // revert
+              }
             }
 
             function hangUp(notifyOther) {

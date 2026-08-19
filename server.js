@@ -44,15 +44,118 @@ const server = http.createServer((req, res) => {
     res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
     res.end(`
       <html>
-        <body style="background:#5b1f9e; color:white; font-family:sans-serif; text-align:center; padding-top:100px;">
-          <h1>ConnectBondhu Messenger</h1>
-          <input id="nameBox" placeholder="Enter your name" style="padding:8px; font-size:16px;" />
-          <button onclick="signIn()" style="padding:8px 16px; font-size:16px;">Sign In</button>
+        <head>
+          <meta name="viewport" content="width=device-width, initial-scale=1" />
+          <style>
+            * { box-sizing: border-box; }
+            body {
+              margin: 0;
+              min-height: 100vh;
+              display: flex;
+              align-items: center;
+              justify-content: center;
+              font-family: -apple-system, Segoe UI, Roboto, sans-serif;
+              background: linear-gradient(135deg, #3d0f6e 0%, #6c2bd9 45%, #9333ea 100%);
+              padding: 20px;
+            }
+            .loginCard {
+              background: rgba(255,255,255,0.06);
+              backdrop-filter: blur(12px);
+              border: 1px solid rgba(255,255,255,0.15);
+              border-radius: 20px;
+              padding: 40px 32px;
+              max-width: 380px;
+              width: 100%;
+              text-align: center;
+              color: white;
+              box-shadow: 0 20px 60px rgba(0,0,0,0.35);
+            }
+            .logoCircle {
+              width: 68px; height: 68px;
+              border-radius: 50%;
+              background: linear-gradient(135deg, #ffd966, #ff9d3d);
+              display: flex; align-items: center; justify-content: center;
+              margin: 0 auto 16px;
+              font-size: 30px;
+            }
+            h1 {
+              font-size: 24px;
+              margin: 0 0 4px;
+              letter-spacing: 0.3px;
+            }
+            .tagline {
+              color: rgba(255,255,255,0.7);
+              font-size: 13px;
+              margin: 0 0 26px;
+            }
+            .nameInput {
+              width: 100%;
+              padding: 13px 16px;
+              border-radius: 12px;
+              border: 1px solid rgba(255,255,255,0.25);
+              background: rgba(255,255,255,0.08);
+              color: white;
+              font-size: 15px;
+              margin-bottom: 14px;
+              outline: none;
+            }
+            .nameInput::placeholder { color: rgba(255,255,255,0.5); }
+            .signInBtn {
+              width: 100%;
+              padding: 13px;
+              border: none;
+              border-radius: 12px;
+              background: linear-gradient(135deg, #ffd966, #ff9d3d);
+              color: #3d0f6e;
+              font-weight: 700;
+              font-size: 15px;
+              cursor: pointer;
+            }
+            .signInBtn:active { transform: scale(0.98); }
+            .featureRow {
+              display: flex;
+              justify-content: center;
+              gap: 10px;
+              margin-top: 26px;
+              flex-wrap: wrap;
+            }
+            .featurePill {
+              background: rgba(255,255,255,0.08);
+              border: 1px solid rgba(255,255,255,0.15);
+              border-radius: 20px;
+              padding: 6px 12px;
+              font-size: 11px;
+              color: rgba(255,255,255,0.85);
+              white-space: nowrap;
+            }
+          </style>
+        </head>
+        <body>
+          <div class="loginCard">
+            <div class="logoCircle">💬</div>
+            <h1>ConnectBondhu</h1>
+            <p class="tagline">Chat • Video Calls • Games • AI</p>
+
+            <input id="nameBox" class="nameInput" placeholder="Enter your name" />
+            <button class="signInBtn" onclick="signIn()">Sign In</button>
+
+            <div class="featureRow">
+              <span class="featurePill">📹 Video Calls</span>
+              <span class="featurePill">🎮 Games</span>
+              <span class="featurePill">🤖 AI Chat</span>
+              <span class="featurePill">🔮 AI Astrology</span>
+            </div>
+          </div>
+
           <script>
             function signIn() {
-              const name = document.getElementById("nameBox").value;
-              window.location.href = "/welcome?name=" + name;
+              const name = document.getElementById("nameBox").value.trim();
+              if (!name) return;
+              window.location.href = "/welcome?name=" + encodeURIComponent(name);
             }
+            document.getElementById("nameBox").addEventListener("keydown", (e) => {
+              if (e.key === "Enter") signIn();
+            });
           </script>
         </body>
       </html>
@@ -68,20 +171,158 @@ const server = http.createServer((req, res) => {
     const allUsers = db.prepare("SELECT name FROM users").all();
     const buddyListHTML = allUsers
       .filter((u) => u.name !== name)
-      .map((u) => `<li><a style="color:#ffd966;" href="/chat?me=${name}&with=${u.name}">${u.name}</a></li>`)
+      .map(
+        (u) => `
+        <a class="buddyRow" href="/chat?me=${name}&with=${u.name}">
+          <span class="buddyAvatar">${u.name.charAt(0).toUpperCase()}</span>
+          <span class="buddyName">${u.name}</span>
+          <span class="buddyStatus">●</span>
+        </a>`
+      )
       .join("");
 
     res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
     res.end(`
       <html>
-        <body style="background:#5b1f9e; color:white; font-family:sans-serif; text-align:center; padding-top:80px;">
-          <h1>Welcome, ${name}!</h1>
-          <p><a style="color:#ffd966;" href="/camera-test?name=${name}">Test my camera & mic</a></p>
-          <p><a style="color:#ffd966;" href="/group-call?room=family-room&me=${name}">Join Group Call (family-room)</a></p>
-          <h3>Signed-in Buddies</h3>
-          <ul style="list-style:none; padding:0;">
-            ${buddyListHTML || "<li>No one else is signed in yet</li>"}
-          </ul>
+        <head>
+          <meta name="viewport" content="width=device-width, initial-scale=1" />
+          <style>
+            * { box-sizing: border-box; }
+            body {
+              margin: 0;
+              min-height: 100vh;
+              font-family: -apple-system, Segoe UI, Roboto, sans-serif;
+              background: linear-gradient(160deg, #3d0f6e 0%, #6c2bd9 50%, #9333ea 100%);
+              color: white;
+              padding-bottom: 30px;
+            }
+            .header {
+              padding: 26px 20px 18px;
+              text-align: center;
+            }
+            .header h1 { margin: 0; font-size: 22px; }
+            .header p { margin: 4px 0 0; color: rgba(255,255,255,0.7); font-size: 13px; }
+
+            .section {
+              max-width: 420px;
+              margin: 0 auto 18px;
+              padding: 0 16px;
+            }
+            .sectionTitle {
+              font-size: 12px;
+              text-transform: uppercase;
+              letter-spacing: 0.8px;
+              color: rgba(255,255,255,0.6);
+              margin: 0 0 8px 4px;
+            }
+
+            .featureGrid {
+              display: grid;
+              grid-template-columns: 1fr 1fr;
+              gap: 10px;
+            }
+            .featureCard {
+              background: rgba(255,255,255,0.07);
+              border: 1px solid rgba(255,255,255,0.15);
+              border-radius: 14px;
+              padding: 14px 12px;
+              text-decoration: none;
+              color: white;
+              display: flex;
+              flex-direction: column;
+              align-items: center;
+              gap: 6px;
+              text-align: center;
+            }
+            .featureCard .icon { font-size: 22px; }
+            .featureCard .label { font-size: 12.5px; font-weight: 600; }
+
+            .buddyList {
+              background: rgba(255,255,255,0.06);
+              border: 1px solid rgba(255,255,255,0.14);
+              border-radius: 14px;
+              overflow: hidden;
+            }
+            .buddyRow {
+              display: flex;
+              align-items: center;
+              gap: 12px;
+              padding: 12px 14px;
+              text-decoration: none;
+              color: white;
+              border-bottom: 1px solid rgba(255,255,255,0.08);
+            }
+            .buddyRow:last-child { border-bottom: none; }
+            .buddyAvatar {
+              width: 36px; height: 36px;
+              border-radius: 50%;
+              background: linear-gradient(135deg, #ffd966, #ff9d3d);
+              color: #3d0f6e;
+              font-weight: 700;
+              display: flex; align-items: center; justify-content: center;
+              flex-shrink: 0;
+            }
+            .buddyName { flex: 1; font-size: 14.5px; font-weight: 500; }
+            .buddyStatus { color: #4ade80; font-size: 10px; }
+            .emptyState { padding: 18px; text-align: center; color: rgba(255,255,255,0.5); font-size: 13px; }
+          </style>
+        </head>
+        <body>
+          <div class="header">
+            <h1>Welcome, ${name}!</h1>
+            <p>What would you like to do?</p>
+          </div>
+
+          <div class="section">
+            <p class="sectionTitle">Quick Access</p>
+            <div class="featureGrid">
+              <a class="featureCard" href="/camera-test?name=${name}">
+                <span class="icon">🎥</span><span class="label">Test Camera & Mic</span>
+              </a>
+              <a class="featureCard" href="/group-call?room=family-room&me=${name}">
+                <span class="icon">👥</span><span class="label">Group Call</span>
+              </a>
+              <a class="featureCard" href="/ai-chat?name=${name}">
+                <span class="icon">🤖</span><span class="label">AI Chat</span>
+              </a>
+              <a class="featureCard" href="/ai-astrology?name=${name}">
+                <span class="icon">🔮</span><span class="label">AI Astrology</span>
+              </a>
+            </div>
+          </div>
+
+          <div class="section">
+            <p class="sectionTitle">Buddies</p>
+            <div class="buddyList">
+              ${buddyListHTML || '<div class="emptyState">No one else is signed in yet</div>'}
+            </div>
+          </div>
+        </body>
+      </html>
+    `);
+
+  } else if (parsedUrl.pathname === "/ai-chat") {
+    const name = parsedUrl.query.name || "";
+    res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+    res.end(`
+      <html>
+        <body style="background:linear-gradient(160deg,#3d0f6e,#9333ea); color:white; font-family:sans-serif; text-align:center; padding-top:100px;">
+          <h1>🤖 AI Chat</h1>
+          <p>Coming soon \u2014 this will let you chat with an AI assistant right inside ConnectBondhu.</p>
+          <a style="color:#ffd966;" href="/welcome?name=${name}">Back to Welcome</a>
+        </body>
+      </html>
+    `);
+
+  } else if (parsedUrl.pathname === "/ai-astrology") {
+    const name = parsedUrl.query.name || "";
+    res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+    res.end(`
+      <html>
+        <body style="background:linear-gradient(160deg,#3d0f6e,#9333ea); color:white; font-family:sans-serif; text-align:center; padding-top:100px;">
+          <h1>🔮 AI Astrology</h1>
+          <p>Coming soon \u2014 personalized horoscopes powered by AI.</p>
+          <a style="color:#ffd966;" href="/welcome?name=${name}">Back to Welcome</a>
         </body>
       </html>
     `);
@@ -172,6 +413,72 @@ const server = http.createServer((req, res) => {
               border-radius:4px;
             }
             .ttt-cell:hover { background:#444; }
+
+            #ludoPath {
+              display:flex;
+              flex-wrap:wrap;
+              gap:3px;
+              max-width:360px;
+              margin:10px auto;
+              justify-content:center;
+            }
+            .ludo-cell {
+              width:26px; height:26px;
+              background:#333;
+              border-radius:4px;
+              display:flex;
+              align-items:center;
+              justify-content:center;
+              font-size:10px;
+              position:relative;
+            }
+            .ludo-token {
+              width:16px; height:16px;
+              border-radius:50%;
+              border:2px solid white;
+              position:absolute;
+            }
+            #diceBtn {
+              font-size:28px;
+              background:#333;
+              border:none;
+              border-radius:8px;
+              padding:8px 16px;
+              margin-top:10px;
+              cursor:pointer;
+            }
+            #diceBtn:disabled { opacity:0.4; cursor:default; }
+            .gamePicker button { padding:6px 12px; margin:2px; border-radius:14px; border:none; }
+            .gamePicker button.active { background:#ffd966; }
+
+            #snlBoard {
+              display:grid;
+              grid-template-columns: repeat(10, 28px);
+              grid-template-rows: repeat(10, 28px);
+              gap:2px;
+              margin:10px auto;
+              width:fit-content;
+            }
+            .snl-cell {
+              background:#333;
+              font-size:8px;
+              color:#999;
+              display:flex;
+              align-items:flex-start;
+              justify-content:flex-start;
+              padding:1px;
+              position:relative;
+              border-radius:2px;
+            }
+            .snl-ladder { background:#2a5; }
+            .snl-snake { background:#a33; }
+            .snl-token {
+              width:12px; height:12px;
+              border-radius:50%;
+              border:1px solid white;
+              position:absolute;
+              bottom:2px; right:2px;
+            }
           </style>
         </head>
         <body>
@@ -190,11 +497,37 @@ const server = http.createServer((req, res) => {
           </div>
 
           <div id="gamePanel">
-            <h3 style="margin:4px;">Tic-Tac-Toe</h3>
-            <p id="gameStatus" style="color:#ffd966;">Loading...</p>
-            <div id="ticTacToeBoard"></div>
-            <button onclick="resetGame()" style="padding:8px 14px; margin-top:8px;">Play Again</button>
-            <button onclick="toggleGamePanel()" style="padding:8px 14px; margin-top:8px;">Close</button>
+            <div class="gamePicker">
+              <button id="pickTTT" class="active" onclick="switchGame('ttt')">Tic-Tac-Toe</button>
+              <button id="pickLudo" onclick="switchGame('ludo')">Ludo (Race)</button>
+              <button id="pickSnl" onclick="switchGame('snl')">Snakes & Ladders</button>
+              <button onclick="toggleGamePanel()">Close</button>
+            </div>
+
+            <div id="tttGame">
+              <h3 style="margin:4px;">Tic-Tac-Toe</h3>
+              <p id="gameStatus" style="color:#ffd966;">Loading...</p>
+              <div id="ticTacToeBoard"></div>
+              <button onclick="resetGame()" style="padding:8px 14px; margin-top:8px;">Play Again</button>
+            </div>
+
+            <div id="ludoGame" style="display:none;">
+              <h3 style="margin:4px;">Ludo (Race)</h3>
+              <p id="ludoStatus" style="color:#ffd966;">Loading...</p>
+              <div id="ludoPath"></div>
+              <button id="diceBtn" onclick="rollDice()" disabled>🎲</button>
+              <br/>
+              <button onclick="resetLudo()" style="padding:8px 14px; margin-top:8px;">Play Again</button>
+            </div>
+
+            <div id="snlGame" style="display:none;">
+              <h3 style="margin:4px;">Snakes & Ladders</h3>
+              <p id="snlStatus" style="color:#ffd966;">Loading...</p>
+              <div id="snlBoard"></div>
+              <button id="snlDiceBtn" onclick="rollSnl()" disabled>🎲</button>
+              <br/>
+              <button onclick="resetSnl()" style="padding:8px 14px; margin-top:8px;">Play Again</button>
+            </div>
           </div>
 
           <script src="/socket.io/socket.io.js"></script>
@@ -338,6 +671,9 @@ const server = http.createServer((req, res) => {
             // ---- Tic-Tac-Toe game ----
             let myRole = null; // "X", "O", or "spectator"
             let joinedGame = false;
+            let joinedLudo = false;
+            let joinedSnl = false;
+            let currentGameView = "ttt";
 
             function toggleGamePanel() {
               const panel = document.getElementById("gamePanel");
@@ -347,6 +683,25 @@ const server = http.createServer((req, res) => {
               if (!isOpen && !joinedGame) {
                 joinedGame = true;
                 socket.emit("game-join", { room });
+              }
+            }
+
+            function switchGame(which) {
+              currentGameView = which;
+              document.getElementById("tttGame").style.display = which === "ttt" ? "block" : "none";
+              document.getElementById("ludoGame").style.display = which === "ludo" ? "block" : "none";
+              document.getElementById("snlGame").style.display = which === "snl" ? "block" : "none";
+              document.getElementById("pickTTT").classList.toggle("active", which === "ttt");
+              document.getElementById("pickLudo").classList.toggle("active", which === "ludo");
+              document.getElementById("pickSnl").classList.toggle("active", which === "snl");
+
+              if (which === "ludo" && !joinedLudo) {
+                joinedLudo = true;
+                socket.emit("ludo-join", { room });
+              }
+              if (which === "snl" && !joinedSnl) {
+                joinedSnl = true;
+                socket.emit("snl-join", { room });
               }
             }
 
@@ -390,6 +745,137 @@ const server = http.createServer((req, res) => {
 
             socket.on("game-state", (state) => {
               renderBoard(state);
+            });
+
+            // ---- Ludo (race) game ----
+            const LUDO_PATH_LENGTH = 30;
+            const LUDO_COLORS = { red: "#e33", blue: "#39c", green: "#3c6", yellow: "#dc3" };
+            let myLudoColor = null;
+
+            function renderLudo(state) {
+              const pathEl = document.getElementById("ludoPath");
+              pathEl.innerHTML = "";
+              for (let i = 0; i < LUDO_PATH_LENGTH; i++) {
+                const cell = document.createElement("div");
+                cell.className = "ludo-cell";
+                cell.textContent = i === LUDO_PATH_LENGTH - 1 ? "🏁" : "";
+
+                Object.entries(state.players).forEach(([color, p]) => {
+                  if (p.position === i) {
+                    const token = document.createElement("div");
+                    token.className = "ludo-token";
+                    token.style.background = LUDO_COLORS[color];
+                    cell.appendChild(token);
+                  }
+                });
+                pathEl.appendChild(cell);
+              }
+
+              const statusEl = document.getElementById("ludoStatus");
+              const diceBtn = document.getElementById("diceBtn");
+
+              if (state.winner) {
+                statusEl.textContent = state.winner + " wins the race!";
+                diceBtn.disabled = true;
+              } else if (myLudoColor === "spectator" || !myLudoColor) {
+                statusEl.textContent = "Watching " + state.turn + "'s turn";
+                diceBtn.disabled = true;
+              } else if (myLudoColor === state.turn) {
+                statusEl.textContent = "Your turn (" + myLudoColor + "). Last roll: " + (state.lastRoll || "-");
+                diceBtn.disabled = false;
+              } else {
+                statusEl.textContent = "Waiting for " + state.turn + "...";
+                diceBtn.disabled = true;
+              }
+            }
+
+            function rollDice() {
+              socket.emit("ludo-roll", { room });
+            }
+
+            function resetLudo() {
+              socket.emit("ludo-reset", { room });
+            }
+
+            socket.on("ludo-role", (color) => {
+              myLudoColor = color;
+            });
+
+            socket.on("ludo-state", (state) => {
+              renderLudo(state);
+            });
+
+            // ---- Snakes & Ladders ----
+            const SNL_COLORS = { red: "#e33", blue: "#39c", green: "#3c6", yellow: "#dc3" };
+            const SNL_LADDERS = { 4: 14, 9: 31, 20: 38, 28: 84, 40: 59, 51: 67, 63: 81, 71: 91 };
+            const SNL_SNAKES = { 17: 7, 54: 34, 62: 19, 64: 60, 87: 24, 93: 73, 95: 75, 99: 78 };
+            let mySnlColor = null;
+
+            function renderSnlBoard(state) {
+              const boardEl = document.getElementById("snlBoard");
+              boardEl.innerHTML = "";
+
+              // Build board visually in the classic boustrophedon (zig-zag) layout,
+              // numbered 1 (bottom-left) to 100 (top-left), 10 columns wide
+              for (let row = 9; row >= 0; row--) {
+                const leftToRight = row % 2 === 0;
+                for (let col = 0; col < 10; col++) {
+                  const colIndex = leftToRight ? col : 9 - col;
+                  const cellNumber = row * 10 + colIndex + 1; // 1-100
+
+                  const cellEl = document.createElement("div");
+                  cellEl.className = "snl-cell";
+                  if (SNL_LADDERS[cellNumber]) cellEl.classList.add("snl-ladder");
+                  if (SNL_SNAKES[cellNumber]) cellEl.classList.add("snl-snake");
+                  cellEl.textContent = cellNumber;
+                  cellEl.style.gridColumn = col + 1;
+                  cellEl.style.gridRow = (10 - row);
+
+                  Object.entries(state.players).forEach(([color, p]) => {
+                    if (p.position === cellNumber) {
+                      const token = document.createElement("div");
+                      token.className = "snl-token";
+                      token.style.background = SNL_COLORS[color];
+                      cellEl.appendChild(token);
+                    }
+                  });
+
+                  boardEl.appendChild(cellEl);
+                }
+              }
+
+              const statusEl = document.getElementById("snlStatus");
+              const diceBtn = document.getElementById("snlDiceBtn");
+
+              if (state.winner) {
+                statusEl.textContent = state.winner + " wins!";
+                diceBtn.disabled = true;
+              } else if (mySnlColor === "spectator" || !mySnlColor) {
+                statusEl.textContent = "Watching " + state.turn + "'s turn";
+                diceBtn.disabled = true;
+              } else if (mySnlColor === state.turn) {
+                statusEl.textContent = "Your turn (" + mySnlColor + "). Last roll: " + (state.lastRoll || "-");
+                diceBtn.disabled = false;
+              } else {
+                statusEl.textContent = "Waiting for " + state.turn + "...";
+                diceBtn.disabled = true;
+              }
+            }
+
+            function rollSnl() {
+              socket.emit("snl-roll", { room });
+            }
+
+            function resetSnl() {
+              socket.emit("snl-reset", { room });
+            }
+
+            socket.on("snl-role", (color) => {
+              mySnlColor = color;
+            });
+
+            socket.on("snl-state", (state) => {
+              renderSnlBoard(state);
             });
 
             start();
@@ -847,6 +1333,27 @@ const ringingRooms = new Set();
 const activeCallRooms = new Set();
 const groupRoomMembers = {}; // room -> { socketId: name }
 const ticTacToeGames = {}; // room -> { board, turn, winner, players }
+const ludoGames = {}; // room -> { players: {color: {socketId, position}}, turnOrder: [], turnIndex, winner, lastRoll }
+const LUDO_PATH_LENGTH = 30;
+const LUDO_COLOR_ORDER = ["red", "blue", "green", "yellow"];
+
+const snlGames = {}; // room -> { players: {color: {socketId, position}}, turnOrder: [], turnIndex, winner, lastRoll }
+const SNL_LADDERS = { 4: 14, 9: 31, 20: 38, 28: 84, 40: 59, 51: 67, 63: 81, 71: 91 };
+const SNL_SNAKES = { 17: 7, 54: 34, 62: 19, 64: 60, 87: 24, 93: 73, 95: 75, 99: 78 };
+
+function emitSnlState(room) {
+  const game = snlGames[room];
+  if (!game) return;
+  game.turn = game.turnOrder[game.turnIndex] || null;
+  io.to("snl-" + room).emit("snl-state", game);
+}
+
+function emitLudoState(room) {
+  const game = ludoGames[room];
+  if (!game) return;
+  game.turn = game.turnOrder[game.turnIndex] || null;
+  io.to("ludo-" + room).emit("ludo-state", game);
+}
 
 io.on("connection", (socket) => {
   socket.on("join", ({ room }) => {
@@ -945,6 +1452,119 @@ io.on("connection", (socket) => {
     io.to("game-" + room).emit("game-state", game);
   });
 
+  // ---- Ludo (race) ----
+  socket.on("ludo-join", ({ room }) => {
+    socket.join("ludo-" + room);
+    socket.data.ludoRoom = room;
+
+    if (!ludoGames[room]) {
+      ludoGames[room] = { players: {}, turnOrder: [], turnIndex: 0, winner: null, lastRoll: null };
+    }
+    const game = ludoGames[room];
+
+    // Reconnecting player who already has a color
+    let myColor = Object.keys(game.players).find((c) => game.players[c].socketId === socket.id);
+
+    if (!myColor && game.turnOrder.length < LUDO_COLOR_ORDER.length) {
+      myColor = LUDO_COLOR_ORDER[game.turnOrder.length];
+      game.players[myColor] = { socketId: socket.id, position: 0 };
+      game.turnOrder.push(myColor);
+    }
+
+    socket.emit("ludo-role", myColor || "spectator");
+    emitLudoState(room);
+  });
+
+  socket.on("ludo-roll", ({ room }) => {
+    const game = ludoGames[room];
+    if (!game || game.winner) return;
+
+    const currentColor = game.turnOrder[game.turnIndex];
+    const player = game.players[currentColor];
+    if (!player || player.socketId !== socket.id) return;
+
+    const roll = Math.floor(Math.random() * 6) + 1;
+    game.lastRoll = roll;
+    player.position = Math.min(player.position + roll, LUDO_PATH_LENGTH - 1);
+
+    if (player.position === LUDO_PATH_LENGTH - 1) {
+      game.winner = currentColor;
+    } else {
+      game.turnIndex = (game.turnIndex + 1) % game.turnOrder.length;
+    }
+
+    emitLudoState(room);
+  });
+
+  socket.on("ludo-reset", ({ room }) => {
+    const game = ludoGames[room];
+    if (!game) return;
+    Object.values(game.players).forEach((p) => (p.position = 0));
+    game.winner = null;
+    game.turnIndex = 0;
+    game.lastRoll = null;
+    emitLudoState(room);
+  });
+
+  // ---- Snakes & Ladders ----
+  socket.on("snl-join", ({ room }) => {
+    socket.join("snl-" + room);
+    socket.data.snlRoom = room;
+
+    if (!snlGames[room]) {
+      snlGames[room] = { players: {}, turnOrder: [], turnIndex: 0, winner: null, lastRoll: null };
+    }
+    const game = snlGames[room];
+
+    let myColor = Object.keys(game.players).find((c) => game.players[c].socketId === socket.id);
+
+    if (!myColor && game.turnOrder.length < LUDO_COLOR_ORDER.length) {
+      myColor = LUDO_COLOR_ORDER[game.turnOrder.length];
+      game.players[myColor] = { socketId: socket.id, position: 1 };
+      game.turnOrder.push(myColor);
+    }
+
+    socket.emit("snl-role", myColor || "spectator");
+    emitSnlState(room);
+  });
+
+  socket.on("snl-roll", ({ room }) => {
+    const game = snlGames[room];
+    if (!game || game.winner) return;
+
+    const currentColor = game.turnOrder[game.turnIndex];
+    const player = game.players[currentColor];
+    if (!player || player.socketId !== socket.id) return;
+
+    const roll = Math.floor(Math.random() * 6) + 1;
+    game.lastRoll = roll;
+
+    let newPos = player.position + roll;
+    if (newPos > 100) newPos = player.position; // must land exactly on 100
+    if (SNL_LADDERS[newPos]) newPos = SNL_LADDERS[newPos];
+    else if (SNL_SNAKES[newPos]) newPos = SNL_SNAKES[newPos];
+
+    player.position = newPos;
+
+    if (player.position === 100) {
+      game.winner = currentColor;
+    } else {
+      game.turnIndex = (game.turnIndex + 1) % game.turnOrder.length;
+    }
+
+    emitSnlState(room);
+  });
+
+  socket.on("snl-reset", ({ room }) => {
+    const game = snlGames[room];
+    if (!game) return;
+    Object.values(game.players).forEach((p) => (p.position = 1));
+    game.winner = null;
+    game.turnIndex = 0;
+    game.lastRoll = null;
+    emitSnlState(room);
+  });
+
   socket.on("disconnect", () => {
     const room = socket.data.groupRoom;
     if (room && groupRoomMembers[room]) {
@@ -958,6 +1578,30 @@ io.on("connection", (socket) => {
       if (game.players.X === socket.id) delete game.players.X;
       if (game.players.O === socket.id) delete game.players.O;
       io.to("game-" + gameRoom).emit("game-state", game);
+    }
+
+    const ludoRoom = socket.data.ludoRoom;
+    if (ludoRoom && ludoGames[ludoRoom]) {
+      const game = ludoGames[ludoRoom];
+      const color = Object.keys(game.players).find((c) => game.players[c].socketId === socket.id);
+      if (color) {
+        delete game.players[color];
+        game.turnOrder = game.turnOrder.filter((c) => c !== color);
+        if (game.turnIndex >= game.turnOrder.length) game.turnIndex = 0;
+        io.to("ludo-" + ludoRoom).emit("ludo-state", game);
+      }
+    }
+
+    const snlRoom = socket.data.snlRoom;
+    if (snlRoom && snlGames[snlRoom]) {
+      const game = snlGames[snlRoom];
+      const color = Object.keys(game.players).find((c) => game.players[c].socketId === socket.id);
+      if (color) {
+        delete game.players[color];
+        game.turnOrder = game.turnOrder.filter((c) => c !== color);
+        if (game.turnIndex >= game.turnOrder.length) game.turnIndex = 0;
+        emitSnlState(snlRoom);
+      }
     }
   });
 

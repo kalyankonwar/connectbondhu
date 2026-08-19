@@ -142,6 +142,36 @@ const server = http.createServer((req, res) => {
             #leaveBtn { background:#e33; color:white; }
             #muteBtn, #camBtn { background:#444; color:white; }
             .off { background:#e33 !important; }
+
+            #gamePanel {
+              display:none;
+              position:fixed;
+              bottom:0; left:0; right:0;
+              background:#1a1a1a;
+              padding:16px;
+              text-align:center;
+              border-top:2px solid #5b1f9e;
+              z-index:500;
+            }
+            #ticTacToeBoard {
+              display:grid;
+              grid-template-columns: repeat(3, 60px);
+              grid-template-rows: repeat(3, 60px);
+              gap:4px;
+              margin:10px auto;
+              width:fit-content;
+            }
+            .ttt-cell {
+              background:#333;
+              color:white;
+              font-size:28px;
+              display:flex;
+              align-items:center;
+              justify-content:center;
+              cursor:pointer;
+              border-radius:4px;
+            }
+            .ttt-cell:hover { background:#444; }
           </style>
         </head>
         <body>
@@ -155,7 +185,16 @@ const server = http.createServer((req, res) => {
           <div id="controls">
             <button id="muteBtn" onclick="toggleMute()">Mute</button>
             <button id="camBtn" onclick="toggleCam()">Camera Off</button>
+            <button onclick="toggleGamePanel()">Games</button>
             <button id="leaveBtn" onclick="leaveCall()">Leave</button>
+          </div>
+
+          <div id="gamePanel">
+            <h3 style="margin:4px;">Tic-Tac-Toe</h3>
+            <p id="gameStatus" style="color:#ffd966;">Loading...</p>
+            <div id="ticTacToeBoard"></div>
+            <button onclick="resetGame()" style="padding:8px 14px; margin-top:8px;">Play Again</button>
+            <button onclick="toggleGamePanel()" style="padding:8px 14px; margin-top:8px;">Close</button>
           </div>
 
           <script src="/socket.io/socket.io.js"></script>
@@ -295,6 +334,63 @@ const server = http.createServer((req, res) => {
               if (localStream) localStream.getTracks().forEach((t) => t.stop());
               window.location.href = "/welcome?name=" + me;
             }
+
+            // ---- Tic-Tac-Toe game ----
+            let myRole = null; // "X", "O", or "spectator"
+            let joinedGame = false;
+
+            function toggleGamePanel() {
+              const panel = document.getElementById("gamePanel");
+              const isOpen = panel.style.display === "block";
+              panel.style.display = isOpen ? "none" : "block";
+
+              if (!isOpen && !joinedGame) {
+                joinedGame = true;
+                socket.emit("game-join", { room });
+              }
+            }
+
+            function renderBoard(state) {
+              const boardEl = document.getElementById("ticTacToeBoard");
+              boardEl.innerHTML = "";
+              state.board.forEach((cell, i) => {
+                const cellEl = document.createElement("div");
+                cellEl.className = "ttt-cell";
+                cellEl.textContent = cell || "";
+                cellEl.onclick = () => makeMove(i);
+                boardEl.appendChild(cellEl);
+              });
+
+              const statusEl = document.getElementById("gameStatus");
+              if (state.winner === "draw") {
+                statusEl.textContent = "It's a draw!";
+              } else if (state.winner) {
+                statusEl.textContent = state.winner + " wins!";
+              } else if (myRole === "spectator") {
+                statusEl.textContent = "Watching " + state.turn + "'s turn";
+              } else if (myRole === state.turn) {
+                statusEl.textContent = "Your turn (" + myRole + ")";
+              } else {
+                statusEl.textContent = "Waiting for " + state.turn + "...";
+              }
+            }
+
+            function makeMove(index) {
+              if (!myRole || myRole === "spectator") return;
+              socket.emit("game-move", { room, index });
+            }
+
+            function resetGame() {
+              socket.emit("game-reset", { room });
+            }
+
+            socket.on("game-role", (role) => {
+              myRole = role;
+            });
+
+            socket.on("game-state", (state) => {
+              renderBoard(state);
+            });
 
             start();
           </script>
@@ -750,6 +846,7 @@ const io = new Server(server, {
 const ringingRooms = new Set();
 const activeCallRooms = new Set();
 const groupRoomMembers = {}; // room -> { socketId: name }
+const ticTacToeGames = {}; // room -> { board, turn, winner, players }
 
 io.on("connection", (socket) => {
   socket.on("join", ({ room }) => {
@@ -785,11 +882,82 @@ io.on("connection", (socket) => {
     io.to(to).emit("group-ice-candidate", { from, candidate });
   });
 
+  // ---- Tic-Tac-Toe ----
+  socket.on("game-join", ({ room }) => {
+    socket.join("game-" + room);
+    socket.data.gameRoom = room;
+
+    if (!ticTacToeGames[room]) {
+      ticTacToeGames[room] = { board: Array(9).fill(null), turn: "X", winner: null, players: {} };
+    }
+    const game = ticTacToeGames[room];
+
+    let role = "spectator";
+    if (!game.players.X) {
+      game.players.X = socket.id;
+      role = "X";
+    } else if (!game.players.O && game.players.X !== socket.id) {
+      game.players.O = socket.id;
+      role = "O";
+    } else if (game.players.X === socket.id) {
+      role = "X";
+    } else if (game.players.O === socket.id) {
+      role = "O";
+    }
+
+    socket.emit("game-role", role);
+    io.to("game-" + room).emit("game-state", game);
+  });
+
+  function checkWinner(board) {
+    const lines = [
+      [0,1,2],[3,4,5],[6,7,8],
+      [0,3,6],[1,4,7],[2,5,8],
+      [0,4,8],[2,4,6]
+    ];
+    for (const [a,b,c] of lines) {
+      if (board[a] && board[a] === board[b] && board[a] === board[c]) return board[a];
+    }
+    if (board.every((cell) => cell)) return "draw";
+    return null;
+  }
+
+  socket.on("game-move", ({ room, index }) => {
+    const game = ticTacToeGames[room];
+    if (!game || game.winner) return;
+
+    const role = game.players.X === socket.id ? "X" : (game.players.O === socket.id ? "O" : null);
+    if (!role || role !== game.turn || game.board[index]) return;
+
+    game.board[index] = role;
+    game.winner = checkWinner(game.board);
+    game.turn = role === "X" ? "O" : "X";
+
+    io.to("game-" + room).emit("game-state", game);
+  });
+
+  socket.on("game-reset", ({ room }) => {
+    const game = ticTacToeGames[room];
+    if (!game) return;
+    game.board = Array(9).fill(null);
+    game.winner = null;
+    game.turn = "X";
+    io.to("game-" + room).emit("game-state", game);
+  });
+
   socket.on("disconnect", () => {
     const room = socket.data.groupRoom;
     if (room && groupRoomMembers[room]) {
       delete groupRoomMembers[room][socket.id];
       socket.to("group-" + room).emit("peer-left", { id: socket.id });
+    }
+
+    const gameRoom = socket.data.gameRoom;
+    if (gameRoom && ticTacToeGames[gameRoom]) {
+      const game = ticTacToeGames[gameRoom];
+      if (game.players.X === socket.id) delete game.players.X;
+      if (game.players.O === socket.id) delete game.players.O;
+      io.to("game-" + gameRoom).emit("game-state", game);
     }
   });
 

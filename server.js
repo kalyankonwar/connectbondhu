@@ -77,6 +77,7 @@ const server = http.createServer((req, res) => {
         <body style="background:#5b1f9e; color:white; font-family:sans-serif; text-align:center; padding-top:80px;">
           <h1>Welcome, ${name}!</h1>
           <p><a style="color:#ffd966;" href="/camera-test?name=${name}">Test my camera & mic</a></p>
+          <p><a style="color:#ffd966;" href="/group-call?room=family-room&me=${name}">Join Group Call (family-room)</a></p>
           <h3>Signed-in Buddies</h3>
           <ul style="list-style:none; padding:0;">
             ${buddyListHTML || "<li>No one else is signed in yet</li>"}
@@ -111,6 +112,191 @@ const server = http.createServer((req, res) => {
                 statusEl.textContent = "Could not access camera/mic: " + err.message;
               }
             }
+          </script>
+        </body>
+      </html>
+    `);
+
+  } else if (parsedUrl.pathname === "/group-call") {
+    const me = parsedUrl.query.me || "Guest";
+    const room = parsedUrl.query.room || "family-room";
+
+    res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+    res.end(`
+      <html>
+        <head>
+          <style>
+            body { background:#111; color:white; font-family:sans-serif; margin:0; padding:0; }
+            #topBar { background:#5b1f9e; padding:14px; text-align:center; }
+            #videoGrid {
+              display:grid;
+              grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+              gap:8px;
+              padding:10px;
+            }
+            .tile { position:relative; background:#222; border-radius:8px; overflow:hidden; aspect-ratio:4/3; }
+            .tile video { width:100%; height:100%; object-fit:cover; }
+            .tile .label { position:absolute; bottom:4px; left:6px; background:rgba(0,0,0,0.5); padding:2px 8px; border-radius:4px; font-size:12px; }
+            #controls { text-align:center; padding:14px; }
+            #controls button { padding:10px 18px; margin:4px; border:none; border-radius:20px; font-size:14px; }
+            #leaveBtn { background:#e33; color:white; }
+            #muteBtn, #camBtn { background:#444; color:white; }
+            .off { background:#e33 !important; }
+          </style>
+        </head>
+        <body>
+          <div id="topBar">
+            <h2 style="margin:4px;">Group Call: ${room}</h2>
+            <p style="margin:4px; font-size:13px; color:#ffd966;">Share this page link with others to join the same room</p>
+          </div>
+
+          <div id="videoGrid"></div>
+
+          <div id="controls">
+            <button id="muteBtn" onclick="toggleMute()">Mute</button>
+            <button id="camBtn" onclick="toggleCam()">Camera Off</button>
+            <button id="leaveBtn" onclick="leaveCall()">Leave</button>
+          </div>
+
+          <script src="/socket.io/socket.io.js"></script>
+          <script>
+            const me = "${me}";
+            const room = "${room}";
+            const socket = io();
+
+            const rtcConfig = {
+              iceServers: [
+                { urls: "stun:stun.l.google.com:19302" },
+                { urls: "turn:openrelay.metered.ca:80", username: "openrelayproject", credential: "openrelayproject" },
+                { urls: "turn:openrelay.metered.ca:443", username: "openrelayproject", credential: "openrelayproject" },
+                { urls: "turn:openrelay.metered.ca:443?transport=tcp", username: "openrelayproject", credential: "openrelayproject" }
+              ]
+            };
+
+            let localStream = null;
+            const peers = {}; // socketId -> RTCPeerConnection
+            let muted = false;
+            let camOff = false;
+
+            function addTile(id, stream, name, isLocal) {
+              let tile = document.getElementById("tile-" + id);
+              if (!tile) {
+                tile = document.createElement("div");
+                tile.className = "tile";
+                tile.id = "tile-" + id;
+                tile.innerHTML = '<video autoplay playsinline' + (isLocal ? ' muted' : '') + '></video><div class="label">' + name + (isLocal ? " (You)" : "") + '</div>';
+                document.getElementById("videoGrid").appendChild(tile);
+              }
+              tile.querySelector("video").srcObject = stream;
+            }
+
+            function removeTile(id) {
+              const tile = document.getElementById("tile-" + id);
+              if (tile) tile.remove();
+            }
+
+            function createPeerConnection(peerId, peerName) {
+              const pc = new RTCPeerConnection(rtcConfig);
+
+              pc.onicecandidate = (event) => {
+                if (event.candidate) {
+                  socket.emit("group-ice-candidate", { to: peerId, from: socket.id, candidate: event.candidate });
+                }
+              };
+
+              pc.ontrack = (event) => {
+                addTile(peerId, event.streams[0], peerName, false);
+              };
+
+              if (localStream) {
+                localStream.getTracks().forEach((track) => pc.addTrack(track, localStream));
+              }
+
+              peers[peerId] = pc;
+              return pc;
+            }
+
+            async function start() {
+              localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+              addTile(socket.id || "local", localStream, me, true);
+
+              socket.emit("join-group", { room, name: me });
+            }
+
+            socket.on("connect", () => {
+              // re-label local tile with real socket id once connected
+              const oldTile = document.getElementById("tile-local");
+              if (oldTile) oldTile.id = "tile-" + socket.id;
+            });
+
+            // Existing people already in the room -> call each of them
+            socket.on("existing-peers", async (peerList) => {
+              for (const peer of peerList) {
+                const pc = createPeerConnection(peer.id, peer.name);
+                const offer = await pc.createOffer();
+                await pc.setLocalDescription(offer);
+                socket.emit("group-offer", { to: peer.id, from: socket.id, offer, name: me });
+              }
+            });
+
+            // Someone new joined -> wait for their offer
+            socket.on("new-peer", ({ id, name }) => {
+              // no action needed here; they will send us an offer
+            });
+
+            socket.on("group-offer", async ({ from, offer, name }) => {
+              const pc = createPeerConnection(from, name);
+              await pc.setRemoteDescription(offer);
+              const answer = await pc.createAnswer();
+              await pc.setLocalDescription(answer);
+              socket.emit("group-answer", { to: from, from: socket.id, answer });
+            });
+
+            socket.on("group-answer", async ({ from, answer }) => {
+              const pc = peers[from];
+              if (pc) await pc.setRemoteDescription(answer);
+            });
+
+            socket.on("group-ice-candidate", async ({ from, candidate }) => {
+              const pc = peers[from];
+              if (pc) {
+                try { await pc.addIceCandidate(candidate); } catch (err) {}
+              }
+            });
+
+            socket.on("peer-left", ({ id }) => {
+              if (peers[id]) {
+                peers[id].close();
+                delete peers[id];
+              }
+              removeTile(id);
+            });
+
+            function toggleMute() {
+              if (!localStream) return;
+              muted = !muted;
+              localStream.getAudioTracks().forEach((t) => (t.enabled = !muted));
+              const btn = document.getElementById("muteBtn");
+              btn.textContent = muted ? "Unmute" : "Mute";
+              btn.classList.toggle("off", muted);
+            }
+
+            function toggleCam() {
+              if (!localStream) return;
+              camOff = !camOff;
+              localStream.getVideoTracks().forEach((t) => (t.enabled = !camOff));
+              const btn = document.getElementById("camBtn");
+              btn.textContent = camOff ? "Camera On" : "Camera Off";
+              btn.classList.toggle("off", camOff);
+            }
+
+            function leaveCall() {
+              Object.values(peers).forEach((pc) => pc.close());
+              if (localStream) localStream.getTracks().forEach((t) => t.stop());
+              window.location.href = "/welcome?name=" + me;
+            }
+
+            start();
           </script>
         </body>
       </html>
@@ -563,10 +749,48 @@ const io = new Server(server, {
 
 const ringingRooms = new Set();
 const activeCallRooms = new Set();
+const groupRoomMembers = {}; // room -> { socketId: name }
 
 io.on("connection", (socket) => {
   socket.on("join", ({ room }) => {
     socket.join(room);
+  });
+
+  // ---- Group call signaling ----
+  socket.on("join-group", ({ room, name }) => {
+    socket.join("group-" + room);
+    socket.data.groupRoom = room;
+    socket.data.name = name;
+
+    if (!groupRoomMembers[room]) groupRoomMembers[room] = {};
+
+    // Tell the new person who is already here
+    const existingPeers = Object.entries(groupRoomMembers[room]).map(([id, n]) => ({ id, name: n }));
+    socket.emit("existing-peers", existingPeers);
+
+    // Add them to the room, then tell everyone else
+    groupRoomMembers[room][socket.id] = name;
+    socket.to("group-" + room).emit("new-peer", { id: socket.id, name });
+  });
+
+  socket.on("group-offer", ({ to, from, offer, name }) => {
+    io.to(to).emit("group-offer", { from, offer, name });
+  });
+
+  socket.on("group-answer", ({ to, from, answer }) => {
+    io.to(to).emit("group-answer", { from, answer });
+  });
+
+  socket.on("group-ice-candidate", ({ to, from, candidate }) => {
+    io.to(to).emit("group-ice-candidate", { from, candidate });
+  });
+
+  socket.on("disconnect", () => {
+    const room = socket.data.groupRoom;
+    if (room && groupRoomMembers[room]) {
+      delete groupRoomMembers[room][socket.id];
+      socket.to("group-" + room).emit("peer-left", { id: socket.id });
+    }
   });
 
   socket.on("chat message", (msg) => {

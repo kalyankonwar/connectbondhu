@@ -22,13 +22,18 @@ try { db.exec("ALTER TABLE messages ADD COLUMN type TEXT DEFAULT 'text'"); } cat
 try { db.exec("ALTER TABLE messages ADD COLUMN file_name TEXT"); } catch (e) {}
 try { db.exec("ALTER TABLE messages ADD COLUMN file_data TEXT"); } catch (e) {}
 
-function renderMessageHTML(m) {
+function renderMessageHTML(m, viewerName) {
+  const mine = m.from_user === viewerName;
+  const actions = mine
+    ? `<span class="msgActions">${m.type === "text" ? `<button onclick="editMsg(${m.id}, this)">Edit</button>` : ""}<button onclick="deleteMsg(${m.id})">Delete</button></span>`
+    : "";
+
   if (m.type === "image") {
-    return `<p><b>${m.from_user}:</b><br/><img src="${m.file_data}" style="max-width:220px; border-radius:6px; margin-top:4px;" /></p>`;
+    return `<div class="msgRow" data-id="${m.id}"><b>${m.from_user}:</b><br/><img src="${m.file_data}" onclick="openImageViewer('${m.file_data}')" style="max-width:220px; border-radius:6px; margin-top:4px; cursor:pointer;" />${actions}</div>`;
   } else if (m.type === "file") {
-    return `<p><b>${m.from_user}:</b><br/><a href="${m.file_data}" download="${m.file_name}">📎 ${m.file_name}</a></p>`;
+    return `<div class="msgRow" data-id="${m.id}"><b>${m.from_user}:</b><br/><a href="${m.file_data}" download="${m.file_name}">📎 ${m.file_name}</a>${actions}</div>`;
   } else {
-    return `<p><b>${m.from_user}:</b> ${m.text}</p>`;
+    return `<div class="msgRow" data-id="${m.id}"><b>${m.from_user}:</b> <span class="msgText">${m.text}</span>${actions}</div>`;
   }
 }
 
@@ -121,7 +126,7 @@ const server = http.createServer((req, res) => {
       )
       .all(me, withBuddy, withBuddy, me);
 
-    const messagesHTML = conversation.map(renderMessageHTML).join("");
+    const messagesHTML = conversation.map((m) => renderMessageHTML(m, me)).join("");
 
     res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
     res.end(`
@@ -142,6 +147,14 @@ const server = http.createServer((req, res) => {
             .callBtn.off { background:#e33; }
 
             #incomingCall { display:none; background:white; color:black; padding:14px; width:250px; margin:10px auto; border-radius:8px; }
+
+            .msgRow { position:relative; margin-bottom:10px; padding-right:70px; }
+            .msgActions { display:inline-block; margin-left:6px; }
+            .msgActions button { font-size:11px; padding:2px 6px; margin-left:3px; border:none; border-radius:4px; background:#eee; cursor:pointer; }
+
+            #imageViewer { display:none; position:fixed; top:0; left:0; right:0; bottom:0; background:rgba(0,0,0,0.9); z-index:1000; align-items:center; justify-content:center; }
+            #imageViewer img { max-width:92%; max-height:92%; border-radius:6px; }
+            #imageViewer .closeViewer { position:absolute; top:20px; right:25px; color:white; font-size:28px; cursor:pointer; }
 
             #attachBar { display:flex; justify-content:center; gap:6px; margin-top:15px; }
             #fileInput { display:none; }
@@ -173,6 +186,11 @@ const server = http.createServer((req, res) => {
             <button onclick="rejectCall()">Reject</button>
           </div>
 
+          <div id="imageViewer" onclick="closeImageViewer()">
+            <span class="closeViewer">&times;</span>
+            <img id="viewerImg" src="" onclick="event.stopPropagation()" />
+          </div>
+
           <div id="messages" style="background:white; color:black; width:300px; margin:15px auto; padding:10px; min-height:150px; text-align:left; border-radius:6px; overflow-y:auto; max-height:300px;">
             ${messagesHTML || "<i>No messages yet</i>"}
           </div>
@@ -202,17 +220,26 @@ const server = http.createServer((req, res) => {
               addMessageToBox(msg);
             });
 
+            function actionsHTML(id, isText) {
+              if (!isText === undefined) isText = true;
+              let editBtn = isText ? '<button onclick="editMsg(' + id + ', this)">Edit</button>' : "";
+              return '<span class="msgActions">' + editBtn + '<button onclick="deleteMsg(' + id + ')">Delete</button></span>';
+            }
+
             function addMessageToBox(msg) {
               const box = document.getElementById("messages");
+              const mine = msg.from === me;
+              const actions = mine ? actionsHTML(msg.id, msg.type === "text") : "";
               let html = "";
+
               if (msg.type === "image") {
-                html = "<p><b>" + msg.from + ":</b><br/><img src=\\"" + msg.fileData + "\\" style=\\"max-width:220px; border-radius:6px; margin-top:4px;\\" /></p>";
+                html = '<div class="msgRow" data-id="' + msg.id + '"><b>' + msg.from + ':</b><br/><img src="' + msg.fileData + '" onclick="openImageViewer(this.src)" style="max-width:220px; border-radius:6px; margin-top:4px; cursor:pointer;" />' + actions + '</div>';
               } else if (msg.type === "file") {
-                html = "<p><b>" + msg.from + ":</b><br/><a href=\\"" + msg.fileData + "\\" download=\\"" + msg.fileName + "\\">\uD83D\uDCCE " + msg.fileName + "</a></p>";
+                html = '<div class="msgRow" data-id="' + msg.id + '"><b>' + msg.from + ':</b><br/><a href="' + msg.fileData + '" download="' + msg.fileName + '">📎 ' + msg.fileName + '</a>' + actions + '</div>';
               } else {
-                html = "<p><b>" + msg.from + ":</b> " + msg.text + "</p>";
+                html = '<div class="msgRow" data-id="' + msg.id + '"><b>' + msg.from + ':</b> <span class="msgText">' + msg.text + '</span>' + actions + '</div>';
               }
-              box.innerHTML += html;
+              box.insertAdjacentHTML("beforeend", html);
               box.scrollTop = box.scrollHeight;
             }
 
@@ -246,6 +273,46 @@ const server = http.createServer((req, res) => {
               };
               reader.readAsDataURL(file);
               input.value = "";
+            }
+
+            // ---- Edit / Delete messages ----
+            function editMsg(id, btn) {
+              const row = document.querySelector('.msgRow[data-id="' + id + '"]');
+              const textSpan = row.querySelector(".msgText");
+              const currentText = textSpan.textContent;
+
+              const newText = prompt("Edit your message:", currentText);
+              if (newText === null || newText.trim() === "" || newText === currentText) return;
+
+              socket.emit("edit-message", { room, id, newText });
+            }
+
+            function deleteMsg(id) {
+              if (!confirm("Delete this message for both of you?")) return;
+              socket.emit("delete-message", { room, id });
+            }
+
+            socket.on("message-edited", ({ id, newText }) => {
+              const row = document.querySelector('.msgRow[data-id="' + id + '"]');
+              if (row) {
+                const textSpan = row.querySelector(".msgText");
+                if (textSpan) textSpan.textContent = newText;
+              }
+            });
+
+            socket.on("message-deleted", ({ id }) => {
+              const row = document.querySelector('.msgRow[data-id="' + id + '"]');
+              if (row) row.remove();
+            });
+
+            // ---- Full screen image viewer ----
+            function openImageViewer(src) {
+              document.getElementById("viewerImg").src = src;
+              document.getElementById("imageViewer").style.display = "flex";
+            }
+
+            function closeImageViewer() {
+              document.getElementById("imageViewer").style.display = "none";
             }
 
             // ---- Video/audio calling ----
@@ -503,7 +570,7 @@ io.on("connection", (socket) => {
   });
 
   socket.on("chat message", (msg) => {
-    db.prepare(
+    const result = db.prepare(
       "INSERT INTO messages (from_user, to_user, text, type, file_name, file_data) VALUES (?, ?, ?, ?, ?, ?)"
     ).run(
       msg.from,
@@ -513,7 +580,18 @@ io.on("connection", (socket) => {
       msg.fileName || null,
       msg.fileData || null
     );
+    msg.id = result.lastInsertRowid;
     io.to(msg.room).emit("chat message", msg);
+  });
+
+  socket.on("edit-message", ({ room, id, newText }) => {
+    db.prepare("UPDATE messages SET text = ? WHERE id = ?").run(newText, id);
+    io.to(room).emit("message-edited", { id, newText });
+  });
+
+  socket.on("delete-message", ({ room, id }) => {
+    db.prepare("DELETE FROM messages WHERE id = ?").run(id);
+    io.to(room).emit("message-deleted", { id });
   });
 
   // ---- Call signaling ----

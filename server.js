@@ -37,8 +37,81 @@ function renderMessageHTML(m, viewerName) {
   }
 }
 
-const server = http.createServer((req, res) => {
+function readRequestBody(req) {
+  return new Promise((resolve, reject) => {
+    let body = "";
+    req.on("data", (chunk) => {
+      body += chunk;
+      if (body.length > 2 * 1024 * 1024) req.destroy(); // 2MB safety limit
+    });
+    req.on("end", () => resolve(body));
+    req.on("error", reject);
+  });
+}
+
+async function callClaude(messages, system) {
+  const response = await fetch("https://api.anthropic.com/v1/messages", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "x-api-key": process.env.ANTHROPIC_API_KEY,
+      "anthropic-version": "2023-06-01"
+    },
+    body: JSON.stringify({
+      model: "claude-sonnet-5",
+      max_tokens: 1000,
+      system: system || undefined,
+      messages
+    })
+  });
+
+  const data = await response.json();
+  if (data.error) throw new Error(data.error.message || "AI request failed");
+  const textBlock = (data.content || []).find((b) => b.type === "text");
+  return textBlock ? textBlock.text : "Sorry, I couldn't generate a response.";
+}
+
+const server = http.createServer(async (req, res) => {
   const parsedUrl = url.parse(req.url, true);
+
+  // ---- AI API endpoints ----
+  if (req.method === "POST" && parsedUrl.pathname === "/api/ai-chat") {
+    try {
+      const body = JSON.parse(await readRequestBody(req));
+      const history = body.history || []; // [{role: "user"/"assistant", content: "..."}]
+
+      const reply = await callClaude(
+        history,
+        "You are a friendly, helpful assistant inside a messenger app called ConnectBondhu. Keep replies conversational and reasonably concise."
+      );
+
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ reply }));
+    } catch (err) {
+      res.writeHead(500, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: err.message }));
+    }
+    return;
+  }
+
+  if (req.method === "POST" && parsedUrl.pathname === "/api/ai-astrology") {
+    try {
+      const body = JSON.parse(await readRequestBody(req));
+      const { zodiacSign, question } = body;
+
+      const reply = await callClaude(
+        [{ role: "user", content: question || "Give me today's horoscope." }],
+        `You are a warm, insightful astrology guide inside a messenger app. The user's zodiac sign is ${zodiacSign}. Give a short, positive, well-written horoscope-style reading (3-5 sentences) relevant to their sign and question. Keep it light and fun, not overly mystical or preachy.`
+      );
+
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ reply }));
+    } catch (err) {
+      res.writeHead(500, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: err.message }));
+    }
+    return;
+  }
 
   if (parsedUrl.pathname === "/") {
     res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
@@ -306,10 +379,96 @@ const server = http.createServer((req, res) => {
     res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
     res.end(`
       <html>
-        <body style="background:linear-gradient(160deg,#3d0f6e,#9333ea); color:white; font-family:sans-serif; text-align:center; padding-top:100px;">
-          <h1>🤖 AI Chat</h1>
-          <p>Coming soon \u2014 this will let you chat with an AI assistant right inside ConnectBondhu.</p>
-          <a style="color:#ffd966;" href="/welcome?name=${name}">Back to Welcome</a>
+        <head>
+          <meta name="viewport" content="width=device-width, initial-scale=1" />
+          <style>
+            * { box-sizing: border-box; }
+            body {
+              margin:0; min-height:100vh;
+              background:linear-gradient(160deg,#3d0f6e,#9333ea);
+              color:white; font-family:-apple-system, Segoe UI, Roboto, sans-serif;
+              display:flex; flex-direction:column;
+            }
+            .topBar { padding:16px; text-align:center; }
+            .topBar a { color:#ffd966; font-size:13px; text-decoration:none; }
+            #chatLog {
+              flex:1; overflow-y:auto; padding:14px;
+              max-width:480px; width:100%; margin:0 auto;
+            }
+            .bubble { max-width:80%; padding:10px 14px; border-radius:14px; margin-bottom:10px; font-size:14.5px; line-height:1.4; }
+            .userBubble { background:#ffd966; color:#3d0f6e; margin-left:auto; border-bottom-right-radius:4px; }
+            .aiBubble { background:rgba(255,255,255,0.12); border:1px solid rgba(255,255,255,0.15); margin-right:auto; border-bottom-left-radius:4px; }
+            .inputBar { display:flex; gap:8px; padding:14px; max-width:480px; width:100%; margin:0 auto; }
+            #chatInput { flex:1; padding:12px 14px; border-radius:20px; border:1px solid rgba(255,255,255,0.25); background:rgba(255,255,255,0.08); color:white; font-size:14.5px; outline:none; }
+            #chatInput::placeholder { color:rgba(255,255,255,0.5); }
+            #sendBtn { padding:12px 18px; border:none; border-radius:20px; background:#ffd966; color:#3d0f6e; font-weight:700; cursor:pointer; }
+            .thinking { color:rgba(255,255,255,0.6); font-size:13px; text-align:left; margin-bottom:10px; }
+          </style>
+        </head>
+        <body>
+          <div class="topBar"><a href="/welcome?name=${name}">&larr; Back to Welcome</a></div>
+          <div id="chatLog">
+            <div class="bubble aiBubble">Hi ${name}! I'm your AI assistant. Ask me anything.</div>
+          </div>
+          <div class="inputBar">
+            <input id="chatInput" placeholder="Type a message..." />
+            <button id="sendBtn" onclick="sendChat()">Send</button>
+          </div>
+
+          <script>
+            const history = [];
+
+            function addBubble(text, who) {
+              const log = document.getElementById("chatLog");
+              const div = document.createElement("div");
+              div.className = "bubble " + (who === "user" ? "userBubble" : "aiBubble");
+              div.textContent = text;
+              log.appendChild(div);
+              log.scrollTop = log.scrollHeight;
+              return div;
+            }
+
+            async function sendChat() {
+              const input = document.getElementById("chatInput");
+              const text = input.value.trim();
+              if (!text) return;
+              input.value = "";
+
+              addBubble(text, "user");
+              history.push({ role: "user", content: text });
+
+              const log = document.getElementById("chatLog");
+              const thinkingEl = document.createElement("div");
+              thinkingEl.className = "thinking";
+              thinkingEl.textContent = "AI is thinking...";
+              log.appendChild(thinkingEl);
+              log.scrollTop = log.scrollHeight;
+
+              try {
+                const res = await fetch("/api/ai-chat", {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({ history })
+                });
+                const data = await res.json();
+                thinkingEl.remove();
+
+                if (data.error) {
+                  addBubble("Error: " + data.error, "ai");
+                } else {
+                  addBubble(data.reply, "ai");
+                  history.push({ role: "assistant", content: data.reply });
+                }
+              } catch (err) {
+                thinkingEl.remove();
+                addBubble("Something went wrong. Please try again.", "ai");
+              }
+            }
+
+            document.getElementById("chatInput").addEventListener("keydown", (e) => {
+              if (e.key === "Enter") sendChat();
+            });
+          </script>
         </body>
       </html>
     `);
@@ -319,10 +478,90 @@ const server = http.createServer((req, res) => {
     res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
     res.end(`
       <html>
-        <body style="background:linear-gradient(160deg,#3d0f6e,#9333ea); color:white; font-family:sans-serif; text-align:center; padding-top:100px;">
-          <h1>🔮 AI Astrology</h1>
-          <p>Coming soon \u2014 personalized horoscopes powered by AI.</p>
-          <a style="color:#ffd966;" href="/welcome?name=${name}">Back to Welcome</a>
+        <head>
+          <meta name="viewport" content="width=device-width, initial-scale=1" />
+          <style>
+            * { box-sizing: border-box; }
+            body {
+              margin:0; min-height:100vh;
+              background:linear-gradient(160deg,#3d0f6e,#9333ea);
+              color:white; font-family:-apple-system, Segoe UI, Roboto, sans-serif;
+              padding:20px; text-align:center;
+            }
+            .card { max-width:420px; margin:0 auto; }
+            a.backLink { color:#ffd966; font-size:13px; text-decoration:none; display:block; margin-bottom:20px; }
+            select, input {
+              width:100%; padding:12px; border-radius:12px; margin-bottom:12px;
+              border:1px solid rgba(255,255,255,0.25); background:rgba(255,255,255,0.08); color:white; font-size:14.5px;
+            }
+            button {
+              width:100%; padding:13px; border:none; border-radius:12px;
+              background:linear-gradient(135deg, #ffd966, #ff9d3d); color:#3d0f6e; font-weight:700; font-size:15px; cursor:pointer;
+            }
+            #reading {
+              margin-top:20px; background:rgba(255,255,255,0.08); border:1px solid rgba(255,255,255,0.15);
+              border-radius:14px; padding:16px; text-align:left; font-size:14.5px; line-height:1.5; display:none;
+            }
+          </style>
+        </head>
+        <body>
+          <div class="card">
+            <a class="backLink" href="/welcome?name=${name}">&larr; Back to Welcome</a>
+            <h1>🔮 AI Astrology</h1>
+            <p style="color:rgba(255,255,255,0.7); font-size:13px;">Get a personalized reading powered by AI</p>
+
+            <select id="zodiacSign">
+              <option value="Aries">Aries (Mar 21 - Apr 19)</option>
+              <option value="Taurus">Taurus (Apr 20 - May 20)</option>
+              <option value="Gemini">Gemini (May 21 - Jun 20)</option>
+              <option value="Cancer">Cancer (Jun 21 - Jul 22)</option>
+              <option value="Leo">Leo (Jul 23 - Aug 22)</option>
+              <option value="Virgo">Virgo (Aug 23 - Sep 22)</option>
+              <option value="Libra">Libra (Sep 23 - Oct 22)</option>
+              <option value="Scorpio">Scorpio (Oct 23 - Nov 21)</option>
+              <option value="Sagittarius">Sagittarius (Nov 22 - Dec 21)</option>
+              <option value="Capricorn">Capricorn (Dec 22 - Jan 19)</option>
+              <option value="Aquarius">Aquarius (Jan 20 - Feb 18)</option>
+              <option value="Pisces">Pisces (Feb 19 - Mar 20)</option>
+            </select>
+
+            <input id="question" placeholder="Anything specific? (optional) e.g. career, love" />
+
+            <button onclick="getReading()" id="readingBtn">Get My Reading</button>
+
+            <div id="reading"></div>
+          </div>
+
+          <script>
+            async function getReading() {
+              const zodiacSign = document.getElementById("zodiacSign").value;
+              const question = document.getElementById("question").value.trim();
+              const btn = document.getElementById("readingBtn");
+              const readingEl = document.getElementById("reading");
+
+              btn.disabled = true;
+              btn.textContent = "Reading the stars...";
+              readingEl.style.display = "none";
+
+              try {
+                const res = await fetch("/api/ai-astrology", {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({ zodiacSign, question: question || undefined })
+                });
+                const data = await res.json();
+
+                readingEl.textContent = data.error ? ("Error: " + data.error) : data.reply;
+                readingEl.style.display = "block";
+              } catch (err) {
+                readingEl.textContent = "Something went wrong. Please try again.";
+                readingEl.style.display = "block";
+              }
+
+              btn.disabled = false;
+              btn.textContent = "Get My Reading";
+            }
+          </script>
         </body>
       </html>
     `);

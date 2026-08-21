@@ -572,14 +572,13 @@ const server = http.createServer(async (req, res) => {
     res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
     res.end(`
       <html>
-        <body style="background:#5b1f9e; color:white; font-family:sans-serif; text-align:center; padding-top:60px;">
-          <h2>Camera & Mic Test</h2>
-          <video id="preview" autoplay playsinline muted style="width:320px; height:240px; background:black; border-radius:8px;"></video>
+        <body style="background:linear-gradient(160deg,#3d0f6e,#9333ea); color:white; font-family:-apple-system, Segoe UI, Roboto, sans-serif; text-align:center; padding-top:60px; margin:0; min-height:100vh;">
+          <a style="color:#ffd966; text-decoration:none; font-size:13px; position:absolute; top:16px; left:16px;" href="/welcome?name=${name}">&larr; Back</a>
+          <h2>🎥 Camera & Mic Test</h2>
+          <video id="preview" autoplay playsinline muted style="width:320px; height:240px; background:black; border-radius:12px; border:1px solid rgba(255,255,255,0.15);"></video>
           <br /><br />
-          <button onclick="startPreview()" style="padding:10px 20px; font-size:16px;">Start Camera & Mic</button>
-          <p id="status" style="margin-top:15px;"></p>
-          <br />
-          <a style="color:#ffd966;" href="/welcome?name=${name}">Back to Welcome</a>
+          <button onclick="startPreview()" style="padding:12px 24px; font-size:15px; border:none; border-radius:20px; background:linear-gradient(135deg,#ffd966,#ff9d3d); color:#3d0f6e; font-weight:700; cursor:pointer;">Start Camera & Mic</button>
+          <p id="status" style="margin-top:15px; color:#ffd966;"></p>
           <script>
             async function startPreview() {
               const statusEl = document.getElementById("status");
@@ -607,7 +606,7 @@ const server = http.createServer(async (req, res) => {
         <head>
           <style>
             body { background:#111; color:white; font-family:sans-serif; margin:0; padding:0; }
-            #topBar { background:#5b1f9e; padding:14px; text-align:center; }
+            #topBar { background:linear-gradient(135deg,#3d0f6e,#9333ea); padding:14px; text-align:center; position:relative; }
             #videoGrid {
               display:grid;
               grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
@@ -722,6 +721,7 @@ const server = http.createServer(async (req, res) => {
         </head>
         <body>
           <div id="topBar">
+            <a href="/welcome?name=${me}" style="color:#ffd966; text-decoration:none; font-size:13px; position:absolute; top:16px; left:16px;">&larr; Back</a>
             <h2 style="margin:4px;">Group Call: ${room}</h2>
             <p style="margin:4px; font-size:13px; color:#ffd966;">Share this page link with others to join the same room</p>
           </div>
@@ -1140,7 +1140,52 @@ const server = http.createServer(async (req, res) => {
       <html>
         <head>
           <style>
-            body { background:#5b1f9e; color:white; font-family:sans-serif; text-align:center; padding-top:20px; margin:0; }
+            body {
+              margin:0;
+              min-height:100vh;
+              font-family:-apple-system, Segoe UI, Roboto, sans-serif;
+              background:linear-gradient(160deg, #3d0f6e 0%, #6c2bd9 50%, #9333ea 100%);
+              color:white;
+              text-align:center;
+              padding-bottom:20px;
+            }
+
+            .chatHeader {
+              display:flex;
+              align-items:center;
+              gap:12px;
+              padding:14px 16px;
+              background:rgba(255,255,255,0.06);
+              border-bottom:1px solid rgba(255,255,255,0.12);
+              text-align:left;
+            }
+            .backBtn {
+              color:#ffd966;
+              text-decoration:none;
+              font-size:20px;
+              padding:4px 6px;
+              flex-shrink:0;
+            }
+            .chatHeaderAvatar {
+              width:38px; height:38px;
+              border-radius:50%;
+              background:linear-gradient(135deg, #ffd966, #ff9d3d);
+              color:#3d0f6e;
+              font-weight:700;
+              display:flex; align-items:center; justify-content:center;
+              flex-shrink:0;
+            }
+            .chatHeaderName { font-size:16px; font-weight:600; }
+            .callBtnTop {
+              margin-left:auto;
+              background:rgba(255,255,255,0.12);
+              border:1px solid rgba(255,255,255,0.2);
+              color:white;
+              padding:8px 16px;
+              border-radius:20px;
+              font-size:13px;
+              cursor:pointer;
+            }
 
             #callArea { display:none; position:fixed; top:0; left:0; right:0; bottom:0; background:#000; z-index:999; }
             #bigVideo { width:100%; height:100%; object-fit:cover; background:#111; }
@@ -1168,10 +1213,11 @@ const server = http.createServer(async (req, res) => {
           </style>
         </head>
         <body>
-          <h2>Chat with ${withBuddy}</h2>
-
-          <div>
-            <button onclick="startCall()" style="padding:8px 14px; margin:4px;">Call</button>
+          <div class="chatHeader">
+            <a class="backBtn" href="/welcome?name=${me}">&larr;</a>
+            <span class="chatHeaderAvatar">${withBuddy.charAt(0).toUpperCase()}</span>
+            <span class="chatHeaderName">${withBuddy}</span>
+            <button class="callBtnTop" onclick="startCall()">📹 Call</button>
           </div>
 
           <div id="callArea">
@@ -1198,16 +1244,16 @@ const server = http.createServer(async (req, res) => {
             <img id="viewerImg" src="" onclick="event.stopPropagation()" />
           </div>
 
-          <div id="messages" style="background:white; color:black; width:300px; margin:15px auto; padding:10px; min-height:150px; text-align:left; border-radius:6px; overflow-y:auto; max-height:300px;">
-            ${messagesHTML || "<i>No messages yet</i>"}
+          <div id="messages" style="background:rgba(255,255,255,0.06); border:1px solid rgba(255,255,255,0.12); color:white; max-width:420px; margin:15px auto; padding:14px; min-height:200px; text-align:left; border-radius:14px; overflow-y:auto; max-height:340px;">
+            ${messagesHTML || "<i style=\"color:rgba(255,255,255,0.5);\">No messages yet</i>"}
           </div>
 
-          <div id="attachBar">
-            <input id="text" placeholder="Type a message" style="padding:8px; width:130px;" />
-            <button onclick="sendMessage()" style="padding:8px 10px;">Send</button>
-            <button onclick="document.getElementById('backCameraInput').click()" style="padding:8px 8px;">Back Cam</button>
-            <button onclick="document.getElementById('frontCameraInput').click()" style="padding:8px 8px;">Front Cam</button>
-            <button onclick="document.getElementById('fileInput').click()" style="padding:8px 8px;">File</button>
+          <div id="attachBar" style="max-width:420px; margin:0 auto; display:flex; flex-wrap:wrap; justify-content:center; gap:6px; padding:0 12px;">
+            <input id="text" placeholder="Type a message" style="flex:1; min-width:120px; padding:11px 14px; border-radius:20px; border:1px solid rgba(255,255,255,0.25); background:rgba(255,255,255,0.08); color:white; font-size:14px;" />
+            <button onclick="sendMessage()" style="padding:10px 16px; border:none; border-radius:20px; background:#ffd966; color:#3d0f6e; font-weight:700; cursor:pointer;">Send</button>
+            <button onclick="document.getElementById('backCameraInput').click()" style="padding:10px 12px; border:none; border-radius:20px; background:rgba(255,255,255,0.12); color:white; cursor:pointer;">📷 Back</button>
+            <button onclick="document.getElementById('frontCameraInput').click()" style="padding:10px 12px; border:none; border-radius:20px; background:rgba(255,255,255,0.12); color:white; cursor:pointer;">🤳 Front</button>
+            <button onclick="document.getElementById('fileInput').click()" style="padding:10px 12px; border:none; border-radius:20px; background:rgba(255,255,255,0.12); color:white; cursor:pointer;">📎 File</button>
             <input type="file" id="backCameraInput" accept="image/*" capture="environment" onchange="sendFile('backCameraInput')" style="display:none;" />
             <input type="file" id="frontCameraInput" accept="image/*" capture="user" onchange="sendFile('frontCameraInput')" style="display:none;" />
             <input type="file" id="fileInput" onchange="sendFile('fileInput')" style="display:none;" />

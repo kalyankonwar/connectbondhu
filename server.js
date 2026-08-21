@@ -32,6 +32,34 @@ db.exec(`
   )
 `);
 
+db.exec(`
+  CREATE TABLE IF NOT EXISTS blocks (
+    blocker_name TEXT,
+    blocked_name TEXT,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (blocker_name, blocked_name)
+  )
+`);
+
+db.exec(`
+  CREATE TABLE IF NOT EXISTS reports (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    reporter TEXT,
+    reported TEXT,
+    reason TEXT,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+  )
+`);
+
+function isBlockedEitherWay(userA, userB) {
+  const row = db
+    .prepare(
+      "SELECT 1 FROM blocks WHERE (blocker_name = ? AND blocked_name = ?) OR (blocker_name = ? AND blocked_name = ?)"
+    )
+    .get(userA, userB, userB, userA);
+  return !!row;
+}
+
 function slugify(text) {
   return text
     .toLowerCase()
@@ -128,6 +156,58 @@ const server = http.createServer(async (req, res) => {
       res.writeHead(500, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ error: err.message }));
     }
+    return;
+  }
+
+  if (req.method === "POST" && parsedUrl.pathname === "/api/report") {
+    try {
+      const body = JSON.parse(await readRequestBody(req));
+      const { reporter, reported, reason } = body;
+      if (!reporter || !reported) throw new Error("Missing required fields");
+
+      db.prepare("INSERT INTO reports (reporter, reported, reason) VALUES (?, ?, ?)").run(
+        reporter,
+        reported,
+        (reason || "").slice(0, 500)
+      );
+
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ success: true }));
+    } catch (err) {
+      res.writeHead(500, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: err.message }));
+    }
+    return;
+  }
+
+  if (parsedUrl.pathname === "/block-user") {
+    const blocker = parsedUrl.query.blocker;
+    const blocked = parsedUrl.query.blocked;
+
+    if (blocker && blocked) {
+      try {
+        db.prepare("INSERT OR IGNORE INTO blocks (blocker_name, blocked_name) VALUES (?, ?)").run(
+          blocker,
+          blocked
+        );
+      } catch (e) {}
+    }
+
+    res.writeHead(302, { Location: `/welcome?name=${encodeURIComponent(blocker || "")}` });
+    res.end();
+    return;
+  }
+
+  if (parsedUrl.pathname === "/unblock-user") {
+    const blocker = parsedUrl.query.blocker;
+    const blocked = parsedUrl.query.blocked;
+
+    if (blocker && blocked) {
+      db.prepare("DELETE FROM blocks WHERE blocker_name = ? AND blocked_name = ?").run(blocker, blocked);
+    }
+
+    res.writeHead(302, { Location: `/blocked-users?me=${encodeURIComponent(blocker || "")}` });
+    res.end();
     return;
   }
 
@@ -236,6 +316,8 @@ const server = http.createServer(async (req, res) => {
               <span class="featurePill">🤖 AI Chat</span>
               <span class="featurePill">🔮 AI Astrology</span>
             </div>
+
+            <p style="margin-top:22px; font-size:11.5px;"><a href="/privacy-policy" style="color:rgba(255,255,255,0.5); text-decoration:underline;">Privacy Policy</a></p>
           </div>
 
           <script>
@@ -261,7 +343,7 @@ const server = http.createServer(async (req, res) => {
 
     const allUsers = db.prepare("SELECT name FROM users").all();
     const buddyListHTML = allUsers
-      .filter((u) => u.name !== name)
+      .filter((u) => u.name !== name && !isBlockedEitherWay(name, u.name))
       .map(
         (u) => `
         <a class="buddyRow" href="/chat?me=${name}&with=${u.name}">
@@ -387,6 +469,20 @@ const server = http.createServer(async (req, res) => {
             <p class="sectionTitle">Buddies</p>
             <div class="buddyList">
               ${buddyListHTML || '<div class="emptyState">No one else is signed in yet</div>'}
+            </div>
+          </div>
+
+          <div class="section">
+            <p class="sectionTitle">Safety & Privacy</p>
+            <div class="buddyList">
+              <a class="buddyRow" href="/blocked-users?me=${name}">
+                <span class="buddyAvatar" style="background:#e33; color:white;">🚫</span>
+                <span class="buddyName">Blocked Users</span>
+              </a>
+              <a class="buddyRow" href="/privacy-policy">
+                <span class="buddyAvatar" style="background:#444; color:white;">📄</span>
+                <span class="buddyName">Privacy Policy</span>
+              </a>
             </div>
           </div>
         </body>
@@ -611,6 +707,117 @@ const server = http.createServer(async (req, res) => {
               }
             }
           </script>
+        </body>
+      </html>
+    `);
+
+  } else if (parsedUrl.pathname === "/privacy-policy") {
+    res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+    res.end(`
+      <html>
+        <head>
+          <meta name="viewport" content="width=device-width, initial-scale=1" />
+          <style>
+            body {
+              margin:0; background:linear-gradient(160deg,#3d0f6e,#9333ea);
+              color:white; font-family:-apple-system, Segoe UI, Roboto, sans-serif;
+              padding:24px 20px 40px;
+            }
+            .card {
+              max-width:600px; margin:0 auto;
+              background:rgba(255,255,255,0.06); border:1px solid rgba(255,255,255,0.15);
+              border-radius:16px; padding:26px;
+            }
+            h1 { font-size:22px; margin-top:0; }
+            h2 { font-size:15px; color:#ffd966; margin-top:26px; }
+            p, li { font-size:13.5px; line-height:1.6; color:rgba(255,255,255,0.85); }
+            a.backLink { color:#ffd966; text-decoration:none; font-size:13px; display:inline-block; margin-bottom:16px; }
+          </style>
+        </head>
+        <body>
+          <div class="card">
+            <a class="backLink" href="javascript:history.back()">&larr; Back</a>
+            <h1>Privacy Policy</h1>
+            <p>Last updated: ${new Date().toISOString().slice(0, 10)}</p>
+            <p>ConnectBondhu ("the app") is a personal messaging project. This policy explains what information is collected and how it's used.</p>
+
+            <h2>Information We Collect</h2>
+            <ul>
+              <li><strong>Display name:</strong> the name you type in to sign in. No password or email is required.</li>
+              <li><strong>Messages:</strong> text messages, images, and files you send are stored so conversations persist between sessions.</li>
+              <li><strong>Camera & microphone:</strong> used only during video/audio calls you initiate. We do not record or store call audio/video.</li>
+              <li><strong>Usage data:</strong> basic technical logs (e.g. connection timestamps) may be recorded by our hosting provider for security and reliability.</li>
+            </ul>
+
+            <h2>How Information Is Used</h2>
+            <p>Your information is used solely to provide core app features: chat, calls, group rooms, games, and AI features. We do not sell or share your data with advertisers or third parties.</p>
+
+            <h2>AI Features</h2>
+            <p>Messages you send to AI Chat or AI Astrology are sent to Anthropic's Claude API to generate a response. These messages are not used to train AI models by Anthropic under their API terms.</p>
+
+            <h2>Blocking & Reporting</h2>
+            <p>You can block another user at any time, which hides them from your buddy list and prevents further messages between you. You can also report a user; reports are stored so misuse can be reviewed.</p>
+
+            <h2>Data Retention & Deletion</h2>
+            <p>Messages and account data are stored until you request deletion. To request your data be deleted, contact the app developer directly.</p>
+
+            <h2>Children's Privacy</h2>
+            <p>This app is not directed at children under 13, and we do not knowingly collect data from children under 13.</p>
+
+            <h2>Changes to This Policy</h2>
+            <p>This policy may be updated as the app evolves. Continued use of the app after changes means you accept the updated policy.</p>
+
+            <h2>Contact</h2>
+            <p>For questions or data deletion requests, please contact the app developer directly.</p>
+          </div>
+        </body>
+      </html>
+    `);
+
+  } else if (parsedUrl.pathname === "/blocked-users") {
+    const me = parsedUrl.query.me || "Guest";
+    const blockedList = db
+      .prepare("SELECT blocked_name, created_at FROM blocks WHERE blocker_name = ? ORDER BY created_at DESC")
+      .all(me);
+
+    const listHTML = blockedList.length
+      ? blockedList
+          .map(
+            (b) => `
+        <div class="roomRow">
+          <span class="roomName">${b.blocked_name}</span>
+          <a class="joinLabel" href="/unblock-user?blocker=${encodeURIComponent(me)}&blocked=${encodeURIComponent(b.blocked_name)}">Unblock</a>
+        </div>`
+          )
+          .join("")
+      : `<div style="padding:14px; font-size:12.5px; color:rgba(255,255,255,0.5); text-align:center;">You haven't blocked anyone.</div>`;
+
+    res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+    res.end(`
+      <html>
+        <head>
+          <meta name="viewport" content="width=device-width, initial-scale=1" />
+          <style>
+            * { box-sizing: border-box; }
+            body { margin:0; min-height:100vh; background:linear-gradient(160deg,#3d0f6e,#9333ea); color:white; font-family:-apple-system, Segoe UI, Roboto, sans-serif; padding-bottom:30px; }
+            .header { padding:20px; text-align:center; position:relative; }
+            .header a.backLink { position:absolute; top:20px; left:16px; color:#ffd966; text-decoration:none; font-size:20px; }
+            .header h1 { margin:6px 0 2px; font-size:20px; }
+            .section { max-width:420px; margin:0 auto; padding:0 16px; }
+            .roomCategory { background:rgba(255,255,255,0.06); border:1px solid rgba(255,255,255,0.14); border-radius:14px; overflow:hidden; margin-top:10px; }
+            .roomRow { display:flex; align-items:center; justify-content:space-between; padding:12px 14px; border-bottom:1px solid rgba(255,255,255,0.07); font-size:14px; }
+            .roomRow:last-child { border-bottom:none; }
+            .joinLabel { color:#ffd966; text-decoration:none; font-size:12.5px; }
+          </style>
+        </head>
+        <body>
+          <div class="header">
+            <a class="backLink" href="/welcome?name=${me}">&larr;</a>
+            <h1>🚫 Blocked Users</h1>
+          </div>
+          <div class="section">
+            <div class="roomCategory">${listHTML}</div>
+          </div>
         </body>
       </html>
     `);
@@ -1315,6 +1522,20 @@ const server = http.createServer(async (req, res) => {
     const me = parsedUrl.query.me;
     const withBuddy = parsedUrl.query.with;
 
+    if (isBlockedEitherWay(me, withBuddy)) {
+      res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+      res.end(`
+        <html>
+          <body style="background:linear-gradient(160deg,#3d0f6e,#9333ea); color:white; font-family:-apple-system, Segoe UI, Roboto, sans-serif; text-align:center; padding-top:100px; margin:0; min-height:100vh;">
+            <h2>🚫 Conversation unavailable</h2>
+            <p style="color:rgba(255,255,255,0.7); max-width:300px; margin:10px auto;">You can't message this user right now.</p>
+            <a style="color:#ffd966; text-decoration:none;" href="/welcome?name=${me}">&larr; Back to Welcome</a>
+          </body>
+        </html>
+      `);
+      return;
+    }
+
     const conversation = db
       .prepare(
         "SELECT * FROM messages WHERE (from_user = ? AND to_user = ?) OR (from_user = ? AND to_user = ?) ORDER BY id ASC"
@@ -1346,6 +1567,7 @@ const server = http.createServer(async (req, res) => {
               background:rgba(255,255,255,0.06);
               border-bottom:1px solid rgba(255,255,255,0.12);
               text-align:left;
+              position:relative;
             }
             .backBtn {
               color:#ffd966;
@@ -1374,6 +1596,26 @@ const server = http.createServer(async (req, res) => {
               font-size:13px;
               cursor:pointer;
             }
+            .menuBtn {
+              background:none; border:none; color:white; font-size:20px; cursor:pointer; padding:4px 8px;
+            }
+            .menuDropdown {
+              display:none;
+              position:absolute;
+              top:52px; right:16px;
+              background:#2a1052;
+              border:1px solid rgba(255,255,255,0.2);
+              border-radius:10px;
+              overflow:hidden;
+              z-index:50;
+              min-width:150px;
+            }
+            .menuDropdown button {
+              display:block; width:100%; text-align:left; padding:11px 14px;
+              background:none; border:none; color:white; font-size:13.5px; cursor:pointer;
+            }
+            .menuDropdown button:hover { background:rgba(255,255,255,0.08); }
+            .menuDropdown button.danger { color:#ff6b6b; }
 
             #callArea { display:none; position:fixed; top:0; left:0; right:0; bottom:0; background:#000; z-index:999; }
             #bigVideo { width:100%; height:100%; object-fit:cover; background:#111; }
@@ -1406,6 +1648,11 @@ const server = http.createServer(async (req, res) => {
             <span class="chatHeaderAvatar">${withBuddy.charAt(0).toUpperCase()}</span>
             <span class="chatHeaderName">${withBuddy}</span>
             <button class="callBtnTop" onclick="startCall()">📹 Call</button>
+            <button class="menuBtn" onclick="toggleMenu()">⋮</button>
+            <div class="menuDropdown" id="menuDropdown">
+              <button onclick="reportUser()">⚠️ Report ${withBuddy}</button>
+              <button class="danger" onclick="blockUser()">🚫 Block ${withBuddy}</button>
+            </div>
           </div>
 
           <div id="callArea">
@@ -1554,6 +1801,41 @@ const server = http.createServer(async (req, res) => {
 
             function closeImageViewer() {
               document.getElementById("imageViewer").style.display = "none";
+            }
+
+            // ---- Menu: Block / Report ----
+            function toggleMenu() {
+              const menu = document.getElementById("menuDropdown");
+              menu.style.display = menu.style.display === "block" ? "none" : "block";
+            }
+            document.addEventListener("click", (e) => {
+              const menu = document.getElementById("menuDropdown");
+              if (menu.style.display === "block" && !e.target.closest(".chatHeader")) {
+                menu.style.display = "none";
+              }
+            });
+
+            function reportUser() {
+              toggleMenu();
+              const reason = prompt("Why are you reporting " + withBuddy + "? (optional)");
+              if (reason === null) return; // cancelled
+
+              fetch("/api/report", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ reporter: me, reported: withBuddy, reason })
+              })
+                .then(() => alert("Thanks, your report has been submitted."))
+                .catch(() => alert("Something went wrong submitting your report."));
+            }
+
+            function blockUser() {
+              toggleMenu();
+              const confirmed = confirm(
+                "Block " + withBuddy + "? You won't see each other's messages or buddy list entries anymore."
+              );
+              if (!confirmed) return;
+              window.location.href = "/block-user?blocker=" + encodeURIComponent(me) + "&blocked=" + encodeURIComponent(withBuddy);
             }
 
             // ---- Video/audio calling ----
@@ -2079,6 +2361,10 @@ io.on("connection", (socket) => {
   });
 
   socket.on("chat message", (msg) => {
+    if (msg.from && msg.to && isBlockedEitherWay(msg.from, msg.to)) {
+      return; // silently drop messages between blocked users
+    }
+
     const result = db.prepare(
       "INSERT INTO messages (from_user, to_user, text, type, file_name, file_data) VALUES (?, ?, ?, ?, ?, ?)"
     ).run(

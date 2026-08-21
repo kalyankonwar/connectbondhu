@@ -22,6 +22,24 @@ try { db.exec("ALTER TABLE messages ADD COLUMN type TEXT DEFAULT 'text'"); } cat
 try { db.exec("ALTER TABLE messages ADD COLUMN file_name TEXT"); } catch (e) {}
 try { db.exec("ALTER TABLE messages ADD COLUMN file_data TEXT"); } catch (e) {}
 
+db.exec(`
+  CREATE TABLE IF NOT EXISTS custom_rooms (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    room_id TEXT UNIQUE,
+    display_name TEXT,
+    created_by TEXT,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+  )
+`);
+
+function slugify(text) {
+  return text
+    .toLowerCase()
+    .trim()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/(^-|-$)/g, "");
+}
+
 function renderMessageHTML(m, viewerName) {
   const mine = m.from_user === viewerName;
   const actions = mine
@@ -341,7 +359,8 @@ const server = http.createServer(async (req, res) => {
           </style>
         </head>
         <body>
-          <div class="header">
+          <div class="header" style="position:relative;">
+            <a href="/welcome?name=${name}" style="position:absolute; top:16px; right:16px; color:#ffd966; font-size:20px; text-decoration:none;" title="Refresh">⟳</a>
             <h1>Welcome, ${name}!</h1>
             <p>What would you like to do?</p>
           </div>
@@ -352,7 +371,7 @@ const server = http.createServer(async (req, res) => {
               <a class="featureCard" href="/camera-test?name=${name}">
                 <span class="icon">🎥</span><span class="label">Test Camera & Mic</span>
               </a>
-              <a class="featureCard" href="/group-call?room=family-room&me=${name}">
+              <a class="featureCard" href="/rooms?me=${name}">
                 <span class="icon">👥</span><span class="label">Group Call</span>
               </a>
               <a class="featureCard" href="/ai-chat?name=${name}">
@@ -595,6 +614,175 @@ const server = http.createServer(async (req, res) => {
         </body>
       </html>
     `);
+
+  } else if (parsedUrl.pathname === "/rooms") {
+    const me = parsedUrl.query.me || "Guest";
+
+    const categories = [
+      { name: "Family & Friends", icon: "👨‍👩‍👧‍👦", rooms: ["Family Room", "Best Friends", "Cousins Corner"] },
+      { name: "General Chat", icon: "💬", rooms: ["General Lobby", "Newcomers", "Random Talk"] },
+      { name: "Sports", icon: "⚽", rooms: ["Cricket Talk", "Football Fans", "Live Match Room"] },
+      { name: "Music & Bollywood", icon: "🎵", rooms: ["Bollywood Beats", "Assamese Music", "Karaoke Room"] },
+      { name: "Regional", icon: "🌏", rooms: ["Assam Adda", "Dibrugarh Circle", "Guwahati Hangout"] }
+    ];
+
+    const categoriesHTML = categories
+      .map(
+        (cat) => `
+        <div class="roomCategory">
+          <div class="categoryHeader"><span class="catIcon">${cat.icon}</span>${cat.name}</div>
+          <div class="roomList">
+            ${cat.rooms
+              .map((room) => {
+                const roomId = room.toLowerCase().replace(/[^a-z0-9]+/g, "-");
+                return `<a class="roomRow" href="/group-call?room=${roomId}&me=${me}">
+                  <span class="roomName">${room}</span>
+                  <span class="joinLabel">Join &rarr;</span>
+                </a>`;
+              })
+              .join("")}
+          </div>
+        </div>`
+      )
+      .join("");
+
+    const customRooms = db.prepare("SELECT * FROM custom_rooms ORDER BY created_at DESC").all();
+    const customRoomsHTML = customRooms.length
+      ? customRooms
+          .map(
+            (r) => `
+        <a class="roomRow" href="/group-call?room=${r.room_id}&me=${me}">
+          <span class="roomName">${r.display_name}<br/><span style="font-size:10.5px; color:rgba(255,255,255,0.5);">by ${r.created_by}</span></span>
+          <span class="joinLabel">Join &rarr;</span>
+        </a>`
+          )
+          .join("")
+      : `<div style="padding:14px; font-size:12.5px; color:rgba(255,255,255,0.5); text-align:center;">No custom rooms yet \u2014 be the first to create one!</div>`;
+
+    res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+    res.end(`
+      <html>
+        <head>
+          <meta name="viewport" content="width=device-width, initial-scale=1" />
+          <style>
+            * { box-sizing: border-box; }
+            body {
+              margin:0; min-height:100vh;
+              background:linear-gradient(160deg,#3d0f6e,#9333ea);
+              color:white; font-family:-apple-system, Segoe UI, Roboto, sans-serif;
+              padding-bottom:30px;
+            }
+            .header { padding:20px 20px 10px; text-align:center; position:relative; }
+            .header a.backLink { position:absolute; top:20px; left:16px; color:#ffd966; text-decoration:none; font-size:20px; }
+            .header h1 { margin:6px 0 2px; font-size:20px; }
+            .header p { margin:0; color:rgba(255,255,255,0.65); font-size:12.5px; }
+
+            .section { max-width:440px; margin:0 auto; padding:0 16px; }
+            .roomCategory {
+              background:rgba(255,255,255,0.06);
+              border:1px solid rgba(255,255,255,0.14);
+              border-radius:14px;
+              margin-top:14px;
+              overflow:hidden;
+            }
+            .categoryHeader {
+              padding:12px 14px;
+              font-weight:700;
+              font-size:14px;
+              background:rgba(255,255,255,0.05);
+              border-bottom:1px solid rgba(255,255,255,0.1);
+              display:flex; align-items:center; justify-content:space-between;
+            }
+            .catIcon { margin-right:8px; }
+            .roomRow {
+              display:flex; align-items:center; justify-content:space-between;
+              padding:11px 14px;
+              text-decoration:none; color:white;
+              border-bottom:1px solid rgba(255,255,255,0.07);
+              font-size:13.5px;
+            }
+            .roomRow:last-child { border-bottom:none; }
+            .joinLabel { color:#ffd966; font-size:12px; flex-shrink:0; margin-left:8px; }
+
+            .createRoomBox {
+              background:rgba(255,255,255,0.08);
+              border:1px solid rgba(255,255,255,0.18);
+              border-radius:14px;
+              padding:14px;
+              margin-top:14px;
+            }
+            .createRoomBox input {
+              width:100%; padding:11px 14px; border-radius:20px;
+              border:1px solid rgba(255,255,255,0.25); background:rgba(255,255,255,0.08);
+              color:white; font-size:14px; margin-bottom:10px;
+            }
+            .createRoomBox input::placeholder { color:rgba(255,255,255,0.5); }
+            .createRoomBox button {
+              width:100%; padding:12px; border:none; border-radius:20px;
+              background:linear-gradient(135deg,#ffd966,#ff9d3d); color:#3d0f6e;
+              font-weight:700; font-size:14px; cursor:pointer;
+            }
+          </style>
+        </head>
+        <body>
+          <div class="header">
+            <a class="backLink" href="/welcome?name=${me}">&larr;</a>
+            <h1>👥 Group Call Rooms</h1>
+            <p>Pick a room, or create your own</p>
+          </div>
+
+          <div class="section">
+            <div class="createRoomBox">
+              <p style="margin:0 0 10px; font-weight:700; font-size:13.5px;">✨ Create Your Own Room</p>
+              <input id="newRoomName" placeholder="Room name, e.g. Movie Night" maxlength="40" />
+              <button onclick="createRoom()">Create & Join</button>
+            </div>
+
+            <div class="roomCategory">
+              <div class="categoryHeader"><span><span class="catIcon">🌟</span>Community Rooms</span></div>
+              <div class="roomList">
+                ${customRoomsHTML}
+              </div>
+            </div>
+
+            ${categoriesHTML}
+          </div>
+
+          <script>
+            function createRoom() {
+              const input = document.getElementById("newRoomName");
+              const name = input.value.trim();
+              if (!name) return;
+              window.location.href = "/create-room?name=" + encodeURIComponent(name) + "&me=" + encodeURIComponent("${me}");
+            }
+            document.getElementById("newRoomName").addEventListener("keydown", (e) => {
+              if (e.key === "Enter") createRoom();
+            });
+          </script>
+        </body>
+      </html>
+    `);
+
+  } else if (parsedUrl.pathname === "/create-room") {
+    const displayName = (parsedUrl.query.name || "").trim().slice(0, 40);
+    const me = parsedUrl.query.me || "Guest";
+
+    if (displayName) {
+      const roomId = slugify(displayName) + "-" + Math.floor(Math.random() * 10000);
+      try {
+        db.prepare("INSERT INTO custom_rooms (room_id, display_name, created_by) VALUES (?, ?, ?)").run(
+          roomId,
+          displayName,
+          me
+        );
+      } catch (e) {}
+
+      res.writeHead(302, { Location: `/group-call?room=${roomId}&me=${encodeURIComponent(me)}` });
+      res.end();
+    } else {
+      res.writeHead(302, { Location: `/rooms?me=${encodeURIComponent(me)}` });
+      res.end();
+    }
 
   } else if (parsedUrl.pathname === "/group-call") {
     const me = parsedUrl.query.me || "Guest";

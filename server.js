@@ -1851,13 +1851,21 @@ const server = http.createServer(async (req, res) => {
               const box = document.getElementById("groupMessages");
               const div = document.createElement("div");
               div.className = "groupMsg";
+              div.setAttribute("data-id", msg.id);
+
+              const mine = msg.from === me;
+              const actions = mine
+                ? '<span style="margin-left:6px;">' +
+                  (msg.type === "text" ? '<button style="font-size:10px; padding:2px 6px; margin-left:3px; border:none; border-radius:4px; background:rgba(255,255,255,0.15); color:white; cursor:pointer;" onclick="editGroupMsg(' + msg.id + ')">Edit</button>' : "") +
+                  '<button style="font-size:10px; padding:2px 6px; margin-left:3px; border:none; border-radius:4px; background:rgba(255,255,255,0.15); color:white; cursor:pointer;" onclick="deleteGroupMsg(' + msg.id + ')">Delete</button></span>'
+                : "";
 
               if (msg.type === "image") {
-                div.innerHTML = "<b>" + msg.from + ":</b><br/><img src=\\"" + msg.fileData + "\\" />";
+                div.innerHTML = "<b>" + msg.from + ":</b>" + actions + "<br/><img src=\\"" + msg.fileData + "\\" />";
               } else if (msg.type === "file") {
-                div.innerHTML = "<b>" + msg.from + ":</b><br/><a style=\\"color:#ffd966;\\" href=\\"" + msg.fileData + "\\" download=\\"" + msg.fileName + "\\">📎 " + msg.fileName + "</a>";
+                div.innerHTML = "<b>" + msg.from + ":</b>" + actions + "<br/><a style=\\"color:#ffd966;\\" href=\\"" + msg.fileData + "\\" download=\\"" + msg.fileName + "\\">📎 " + msg.fileName + "</a>";
               } else {
-                div.innerHTML = "<b>" + msg.from + ":</b> " + msg.text;
+                div.innerHTML = "<b>" + msg.from + ":</b> <span class=\\"groupMsgText\\">" + msg.text + "</span>" + actions;
               }
               box.appendChild(div);
               box.scrollTop = box.scrollHeight;
@@ -1871,6 +1879,33 @@ const server = http.createServer(async (req, res) => {
             socket.on("group-chat-message", (msg) => {
               renderGroupMsg(msg);
             });
+
+            socket.on("group-message-edited", ({ id, newText }) => {
+              const row = document.querySelector('.groupMsg[data-id="' + id + '"]');
+              if (row) {
+                const textSpan = row.querySelector(".groupMsgText");
+                if (textSpan) textSpan.textContent = newText;
+              }
+            });
+
+            socket.on("group-message-deleted", ({ id }) => {
+              const row = document.querySelector('.groupMsg[data-id="' + id + '"]');
+              if (row) row.remove();
+            });
+
+            function editGroupMsg(id) {
+              const row = document.querySelector('.groupMsg[data-id="' + id + '"]');
+              const textSpan = row ? row.querySelector(".groupMsgText") : null;
+              if (!textSpan) return;
+              const newText = prompt("Edit your message:", textSpan.textContent);
+              if (newText === null || newText.trim() === "" || newText === textSpan.textContent) return;
+              socket.emit("group-edit-message", { room, id, newText });
+            }
+
+            function deleteGroupMsg(id) {
+              if (!confirm("Delete this message for everyone in the room?")) return;
+              socket.emit("group-delete-message", { room, id });
+            }
 
             function sendGroupMessage() {
               const input = document.getElementById("groupChatInput");
@@ -1888,8 +1923,8 @@ const server = http.createServer(async (req, res) => {
               const input = document.getElementById("groupFileInput");
               const file = input.files[0];
               if (!file) return;
-              if (file.size > 3 * 1024 * 1024) {
-                alert("Please choose a file under 3MB.");
+              if (file.size > 8 * 1024 * 1024) {
+                alert("Please choose a file under 8MB.");
                 input.value = "";
                 return;
               }
@@ -2415,8 +2450,8 @@ const server = http.createServer(async (req, res) => {
               const file = input.files[0];
               if (!file) return;
 
-              if (file.size > 3 * 1024 * 1024) {
-                alert("Please choose a file under 3MB for now.");
+              if (file.size > 8 * 1024 * 1024) {
+                alert("Please choose a file under 8MB for now.");
                 input.value = "";
                 return;
               }
@@ -2842,7 +2877,7 @@ const server = http.createServer(async (req, res) => {
 });
 
 const io = new Server(server, {
-  maxHttpBufferSize: 5 * 1024 * 1024 // allow larger messages for file sharing
+  maxHttpBufferSize: 15 * 1024 * 1024 // allow larger messages for file sharing (8MB files, base64-encoded)
 });
 
 const ringingRooms = new Set();
@@ -2850,6 +2885,7 @@ const activeCallRooms = new Set();
 const groupRoomMembers = {}; // room -> { socketId: {name, gender} }
 const roomRosterMembers = {}; // room -> { socketId: {name, gender} } (lightweight, no video)
 const groupChatHistory = {}; // room -> [ recent messages ]
+let groupMessageIdCounter = 0;
 const privateRoomMembers = {}; // privateRoomId -> { socketId: name }
 const ticTacToeGames = {}; // room -> { board, turn, winner, players }
 const ludoGames = {}; // room -> { players: {color: {socketId, position}}, turnOrder: [], turnIndex, winner, lastRoll }
@@ -2942,14 +2978,31 @@ io.on("connection", (socket) => {
   // ---- Group text chat (with recent history buffer) ----
   socket.on("group-chat-message", (msg) => {
     if (!groupChatHistory[msg.room]) groupChatHistory[msg.room] = [];
+    groupMessageIdCounter++;
+    msg.id = groupMessageIdCounter;
     groupChatHistory[msg.room].push(msg);
     if (groupChatHistory[msg.room].length > 50) groupChatHistory[msg.room].shift();
 
-    io.to("group-" + msg.room).emit("group-chat-message", msg);
+    io.to("room-" + msg.room).emit("group-chat-message", msg);
   });
 
   socket.on("get-group-chat-history", ({ room }) => {
     socket.emit("group-chat-history", groupChatHistory[room] || []);
+  });
+
+  socket.on("group-edit-message", ({ room, id, newText }) => {
+    const history = groupChatHistory[room];
+    if (!history) return;
+    const msg = history.find((m) => m.id === id);
+    if (!msg) return;
+    msg.text = newText;
+    io.to("room-" + room).emit("group-message-edited", { id, newText });
+  });
+
+  socket.on("group-delete-message", ({ room, id }) => {
+    if (!groupChatHistory[room]) return;
+    groupChatHistory[room] = groupChatHistory[room].filter((m) => m.id !== id);
+    io.to("room-" + room).emit("group-message-deleted", { id });
   });
 
   // ---- Private calls within a group room ----

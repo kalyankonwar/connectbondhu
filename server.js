@@ -21,6 +21,14 @@ db.exec(`
 try { db.exec("ALTER TABLE messages ADD COLUMN type TEXT DEFAULT 'text'"); } catch (e) {}
 try { db.exec("ALTER TABLE messages ADD COLUMN file_name TEXT"); } catch (e) {}
 try { db.exec("ALTER TABLE messages ADD COLUMN file_data TEXT"); } catch (e) {}
+try { db.exec("ALTER TABLE users ADD COLUMN gender TEXT"); } catch (e) {}
+
+function genderBadge(gender) {
+  if (gender === "Male") return '<span style="color:#5aa9ff;">♂</span>';
+  if (gender === "Female") return '<span style="color:#ff8fc7;">♀</span>';
+  if (gender === "Other") return '<span style="color:#c58fff;">⚧</span>';
+  return "";
+}
 
 db.exec(`
   CREATE TABLE IF NOT EXISTS custom_rooms (
@@ -308,6 +316,12 @@ const server = http.createServer(async (req, res) => {
             <p class="tagline">Chat • Video Calls • Games • AI</p>
 
             <input id="nameBox" class="nameInput" placeholder="Enter your name" />
+            <select id="genderBox" class="nameInput">
+              <option value="">Gender (optional)</option>
+              <option value="Male">Male</option>
+              <option value="Female">Female</option>
+              <option value="Other">Other</option>
+            </select>
             <button class="signInBtn" onclick="signIn()">Sign In</button>
 
             <div class="featureRow">
@@ -323,8 +337,9 @@ const server = http.createServer(async (req, res) => {
           <script>
             function signIn() {
               const name = document.getElementById("nameBox").value.trim();
+              const gender = document.getElementById("genderBox").value;
               if (!name) return;
-              window.location.href = "/welcome?name=" + encodeURIComponent(name);
+              window.location.href = "/welcome?name=" + encodeURIComponent(name) + "&gender=" + encodeURIComponent(gender);
             }
             document.getElementById("nameBox").addEventListener("keydown", (e) => {
               if (e.key === "Enter") signIn();
@@ -336,19 +351,20 @@ const server = http.createServer(async (req, res) => {
 
   } else if (parsedUrl.pathname === "/welcome") {
     const name = parsedUrl.query.name;
+    const gender = parsedUrl.query.gender || "";
 
     if (name) {
-      db.prepare("INSERT OR IGNORE INTO users (name) VALUES (?)").run(name);
+      db.prepare("INSERT INTO users (name, gender) VALUES (?, ?) ON CONFLICT(name) DO UPDATE SET gender = excluded.gender").run(name, gender || null);
     }
 
-    const allUsers = db.prepare("SELECT name FROM users").all();
+    const allUsers = db.prepare("SELECT name, gender FROM users").all();
     const buddyListHTML = allUsers
       .filter((u) => u.name !== name && !isBlockedEitherWay(name, u.name))
       .map(
         (u) => `
         <a class="buddyRow" href="/chat?me=${name}&with=${u.name}">
           <span class="buddyAvatar">${u.name.charAt(0).toUpperCase()}</span>
-          <span class="buddyName">${u.name}</span>
+          <span class="buddyName">${u.name} ${genderBadge(u.gender)}</span>
           <span class="buddyStatus">●</span>
         </a>`
       )
@@ -453,7 +469,7 @@ const server = http.createServer(async (req, res) => {
               <a class="featureCard" href="/camera-test?name=${name}">
                 <span class="icon">🎥</span><span class="label">Test Camera & Mic</span>
               </a>
-              <a class="featureCard" href="/rooms?me=${name}">
+              <a class="featureCard" href="/rooms?me=${name}&gender=${gender}">
                 <span class="icon">👥</span><span class="label">Group Call</span>
               </a>
               <a class="featureCard" href="/ai-chat?name=${name}">
@@ -824,6 +840,7 @@ const server = http.createServer(async (req, res) => {
 
   } else if (parsedUrl.pathname === "/rooms") {
     const me = parsedUrl.query.me || "Guest";
+    const genderParam = parsedUrl.query.gender || "";
 
     const categories = [
       { name: "Family & Friends", icon: "👨‍👩‍👧‍👦", rooms: ["Family Room", "Best Friends", "Cousins Corner"] },
@@ -842,7 +859,7 @@ const server = http.createServer(async (req, res) => {
             ${cat.rooms
               .map((room) => {
                 const roomId = room.toLowerCase().replace(/[^a-z0-9]+/g, "-");
-                return `<a class="roomRow" href="/group-call?room=${roomId}&me=${me}">
+                return `<a class="roomRow" href="/group-call?room=${roomId}&me=${me}&gender=${genderParam}">
                   <span class="roomName">${room}</span>
                   <span class="joinLabel">Join &rarr;</span>
                 </a>`;
@@ -858,7 +875,7 @@ const server = http.createServer(async (req, res) => {
       ? customRooms
           .map(
             (r) => `
-        <a class="roomRow" href="/group-call?room=${r.room_id}&me=${me}">
+        <a class="roomRow" href="/group-call?room=${r.room_id}&me=${me}&gender=${genderParam}">
           <span class="roomName">${r.display_name}<br/><span style="font-size:10.5px; color:rgba(255,255,255,0.5);">by ${r.created_by}</span></span>
           <span class="joinLabel">Join &rarr;</span>
         </a>`
@@ -960,7 +977,7 @@ const server = http.createServer(async (req, res) => {
               const input = document.getElementById("newRoomName");
               const name = input.value.trim();
               if (!name) return;
-              window.location.href = "/create-room?name=" + encodeURIComponent(name) + "&me=" + encodeURIComponent("${me}");
+              window.location.href = "/create-room?name=" + encodeURIComponent(name) + "&me=" + encodeURIComponent("${me}") + "&gender=" + encodeURIComponent("${genderParam}");
             }
             document.getElementById("newRoomName").addEventListener("keydown", (e) => {
               if (e.key === "Enter") createRoom();
@@ -973,6 +990,7 @@ const server = http.createServer(async (req, res) => {
   } else if (parsedUrl.pathname === "/create-room") {
     const displayName = (parsedUrl.query.name || "").trim().slice(0, 40);
     const me = parsedUrl.query.me || "Guest";
+    const genderParam = parsedUrl.query.gender || "";
 
     if (displayName) {
       const roomId = slugify(displayName) + "-" + Math.floor(Math.random() * 10000);
@@ -984,15 +1002,16 @@ const server = http.createServer(async (req, res) => {
         );
       } catch (e) {}
 
-      res.writeHead(302, { Location: `/group-call?room=${roomId}&me=${encodeURIComponent(me)}` });
+      res.writeHead(302, { Location: `/group-call?room=${roomId}&me=${encodeURIComponent(me)}&gender=${encodeURIComponent(genderParam)}` });
       res.end();
     } else {
-      res.writeHead(302, { Location: `/rooms?me=${encodeURIComponent(me)}` });
+      res.writeHead(302, { Location: `/rooms?me=${encodeURIComponent(me)}&gender=${encodeURIComponent(genderParam)}` });
       res.end();
     }
 
   } else if (parsedUrl.pathname === "/group-call") {
     const me = parsedUrl.query.me || "Guest";
+    const genderQ = parsedUrl.query.gender || "";
     const room = parsedUrl.query.room || "family-room";
 
     res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
@@ -1000,32 +1019,61 @@ const server = http.createServer(async (req, res) => {
       <html>
         <head>
           <style>
-            body { background:#111; color:white; font-family:sans-serif; margin:0; padding:0; }
-            #topBar { background:linear-gradient(135deg,#3d0f6e,#9333ea); padding:14px; text-align:center; position:relative; }
+            * { box-sizing:border-box; }
+            body { background:linear-gradient(160deg,#0f0620,#1a0b33); color:white; font-family:-apple-system, Segoe UI, Roboto, sans-serif; margin:0; padding:0; }
+            #topBar {
+              background:linear-gradient(135deg,#3d0f6e,#9333ea);
+              padding:14px; text-align:center; position:relative;
+              box-shadow:0 2px 10px rgba(0,0,0,0.3);
+            }
+            #topBar h2 { margin:4px; font-size:16px; }
             #videoGrid {
               display:grid;
-              grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
-              gap:8px;
-              padding:10px;
+              grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+              gap:10px;
+              padding:14px;
             }
-            .tile { position:relative; background:#222; border-radius:8px; overflow:hidden; aspect-ratio:4/3; }
+            .tile {
+              position:relative; background:#1c1230; border-radius:14px; overflow:hidden;
+              aspect-ratio:4/3; border:1px solid rgba(255,255,255,0.1);
+              box-shadow:0 4px 14px rgba(0,0,0,0.35);
+              transition:transform 0.15s;
+            }
             .tile video { width:100%; height:100%; object-fit:cover; }
-            .tile .label { position:absolute; bottom:4px; left:6px; background:rgba(0,0,0,0.5); padding:2px 8px; border-radius:4px; font-size:12px; }
-            #controls { text-align:center; padding:14px; }
-            #controls button { padding:10px 18px; margin:4px; border:none; border-radius:20px; font-size:14px; }
-            #leaveBtn { background:#e33; color:white; }
-            #muteBtn, #camBtn { background:#444; color:white; }
+            .tile .label {
+              position:absolute; bottom:6px; left:8px;
+              background:rgba(0,0,0,0.55); padding:3px 10px; border-radius:12px;
+              font-size:12px; display:flex; align-items:center; gap:4px;
+            }
+            .tile .privateCallBtn {
+              position:absolute; top:6px; right:6px;
+              background:rgba(0,0,0,0.55); border:1px solid rgba(255,255,255,0.25);
+              color:white; border-radius:14px; padding:4px 9px; font-size:11px; cursor:pointer;
+            }
+            #controls {
+              text-align:center; padding:14px;
+              display:flex; flex-wrap:wrap; justify-content:center; gap:8px;
+            }
+            #controls button {
+              padding:11px 18px; border:none; border-radius:22px; font-size:13.5px;
+              background:rgba(255,255,255,0.1); color:white; cursor:pointer;
+              border:1px solid rgba(255,255,255,0.15);
+            }
+            #leaveBtn { background:linear-gradient(135deg,#e33,#c22); color:white; }
             .off { background:#e33 !important; }
 
             #gamePanel {
               display:none;
               position:fixed;
               bottom:0; left:0; right:0;
-              background:#1a1a1a;
+              background:#160c2b;
               padding:16px;
               text-align:center;
-              border-top:2px solid #5b1f9e;
+              border-top:2px solid #9333ea;
+              border-radius:20px 20px 0 0;
               z-index:500;
+              max-height:70vh;
+              overflow-y:auto;
             }
             #ticTacToeBoard {
               display:grid;
@@ -1112,22 +1160,102 @@ const server = http.createServer(async (req, res) => {
               position:absolute;
               bottom:2px; right:2px;
             }
+
+            /* Group text chat panel */
+            #chatPanel {
+              display:none;
+              position:fixed;
+              top:0; right:0; bottom:0;
+              width:100%; max-width:340px;
+              background:#160c2b;
+              border-left:1px solid rgba(255,255,255,0.12);
+              z-index:600;
+              display:none;
+              flex-direction:column;
+            }
+            #chatPanel.open { display:flex; }
+            #chatPanelHeader {
+              padding:14px; background:linear-gradient(135deg,#3d0f6e,#9333ea);
+              display:flex; justify-content:space-between; align-items:center; font-size:14px; font-weight:600;
+            }
+            #chatPanelHeader span.closeChat { cursor:pointer; font-size:18px; }
+            #groupMessages { flex:1; overflow-y:auto; padding:12px; }
+            .groupMsg { margin-bottom:10px; font-size:13px; }
+            .groupMsg b { color:#ffd966; }
+            .groupMsg img { max-width:160px; border-radius:8px; margin-top:4px; display:block; }
+            #chatInputBar { padding:10px; border-top:1px solid rgba(255,255,255,0.1); position:relative; }
+            #chatInputRow { display:flex; gap:6px; }
+            #groupChatInput {
+              flex:1; padding:10px 12px; border-radius:18px; border:1px solid rgba(255,255,255,0.2);
+              background:rgba(255,255,255,0.07); color:white; font-size:13px;
+            }
+            #chatInputBar button {
+              border:none; border-radius:18px; padding:9px 12px; background:rgba(255,255,255,0.1); color:white; font-size:14px; cursor:pointer;
+            }
+            #chatInputBar .sendGroupBtn { background:#ffd966; color:#3d0f6e; font-weight:700; }
+
+            #emojiPicker {
+              display:none;
+              position:absolute; bottom:52px; left:10px; right:10px;
+              background:#221542; border:1px solid rgba(255,255,255,0.15); border-radius:12px;
+              padding:8px; max-height:160px; overflow-y:auto;
+              grid-template-columns: repeat(7, 1fr); gap:4px;
+            }
+            #emojiPicker span { font-size:20px; text-align:center; cursor:pointer; padding:4px; border-radius:6px; }
+            #emojiPicker span:hover { background:rgba(255,255,255,0.1); }
+
+            /* Private call overlay */
+            #privateCallOverlay {
+              display:none;
+              position:fixed; top:0; left:0; right:0; bottom:0;
+              background:#000; z-index:900;
+            }
+            #privateBigVideo { width:100%; height:100%; object-fit:cover; }
+            #privateSmallVideo {
+              position:absolute; width:100px; height:135px; top:20px; right:20px;
+              object-fit:cover; border-radius:10px; border:2px solid white; background:#333;
+            }
+            #privateCallStatus {
+              position:absolute; top:20px; left:20px; color:#ffd966; font-size:14px;
+              background:rgba(0,0,0,0.4); padding:4px 10px; border-radius:6px;
+            }
+            #privateCallControls {
+              position:absolute; bottom:26px; left:50%; transform:translateX(-50%);
+              display:flex; gap:10px;
+            }
+            #privateCallControls button {
+              border:none; padding:12px 18px; border-radius:24px; font-size:13px; color:white; cursor:pointer;
+            }
+            #privateInviteBox {
+              position:absolute; bottom:90px; left:50%; transform:translateX(-50%);
+              background:rgba(0,0,0,0.6); border-radius:12px; padding:8px; display:none; gap:4px;
+              max-width:80%; flex-wrap:wrap; justify-content:center;
+            }
+            #privateInviteBox button { font-size:11px; padding:6px 10px; border-radius:12px; border:none; background:#333; color:white; }
+
+            #privateIncoming {
+              display:none;
+              position:fixed; top:20px; left:50%; transform:translateX(-50%);
+              background:white; color:black; padding:14px 18px; border-radius:12px;
+              z-index:950; text-align:center; box-shadow:0 6px 20px rgba(0,0,0,0.4);
+            }
           </style>
         </head>
         <body>
           <div id="topBar">
             <a href="/welcome?name=${me}" style="color:#ffd966; text-decoration:none; font-size:13px; position:absolute; top:16px; left:16px;">&larr; Back</a>
-            <h2 style="margin:4px;">Group Call: ${room}</h2>
-            <p style="margin:4px; font-size:13px; color:#ffd966;">Share this page link with others to join the same room</p>
+            <h2>👥 ${room}</h2>
+            <p style="margin:4px; font-size:12.5px; color:#ffd966;">Chat, share files, or start a private call with anyone here</p>
           </div>
 
           <div id="videoGrid"></div>
 
           <div id="controls">
-            <button id="muteBtn" onclick="toggleMute()">Mute</button>
-            <button id="camBtn" onclick="toggleCam()">Camera Off</button>
-            <button onclick="toggleGamePanel()">Games</button>
-            <button id="leaveBtn" onclick="leaveCall()">Leave</button>
+            <button id="muteBtn" onclick="toggleMute()">🎤 Mute</button>
+            <button id="camBtn" onclick="toggleCam()">📷 Camera Off</button>
+            <button onclick="toggleChatPanel()">💬 Chat</button>
+            <button onclick="toggleGamePanel()">🎮 Games</button>
+            <button id="leaveBtn" onclick="leaveCall()">🚪 Leave</button>
           </div>
 
           <div id="gamePanel">
@@ -1164,9 +1292,45 @@ const server = http.createServer(async (req, res) => {
             </div>
           </div>
 
+          <div id="chatPanel">
+            <div id="chatPanelHeader">
+              <span>💬 Room Chat</span>
+              <span class="closeChat" onclick="toggleChatPanel()">&times;</span>
+            </div>
+            <div id="groupMessages"></div>
+            <div id="chatInputBar">
+              <div id="emojiPicker"></div>
+              <div id="chatInputRow">
+                <button onclick="toggleEmojiPicker()">😊</button>
+                <input id="groupChatInput" placeholder="Message the room..." />
+                <button onclick="document.getElementById('groupFileInput').click()">📎</button>
+                <button class="sendGroupBtn" onclick="sendGroupMessage()">Send</button>
+              </div>
+              <input type="file" id="groupFileInput" onchange="sendGroupFile()" style="display:none;" />
+            </div>
+          </div>
+
+          <div id="privateCallOverlay">
+            <video id="privateBigVideo" autoplay playsinline></video>
+            <video id="privateSmallVideo" autoplay playsinline muted></video>
+            <p id="privateCallStatus"></p>
+            <div id="privateInviteBox"></div>
+            <div id="privateCallControls">
+              <button onclick="togglePrivateInviteBox()" style="background:#444;">➕ Invite</button>
+              <button onclick="endPrivateCall(true)" style="background:#e33;">End Private Call</button>
+            </div>
+          </div>
+
+          <div id="privateIncoming">
+            <p id="privateIncomingText" style="margin:0 0 10px;"></p>
+            <button onclick="acceptPrivateCall()" style="padding:8px 16px; margin-right:8px; border:none; border-radius:16px; background:#4ade80; cursor:pointer;">Accept</button>
+            <button onclick="declinePrivateCall()" style="padding:8px 16px; border:none; border-radius:16px; background:#e33; color:white; cursor:pointer;">Decline</button>
+          </div>
+
           <script src="/socket.io/socket.io.js"></script>
           <script>
             const me = "${me}";
+            const myGender = "${genderQ}";
             const room = "${room}";
             const socket = io();
 
@@ -1181,16 +1345,26 @@ const server = http.createServer(async (req, res) => {
 
             let localStream = null;
             const peers = {}; // socketId -> RTCPeerConnection
+            const peerGenders = {}; // socketId -> gender
             let muted = false;
             let camOff = false;
 
-            function addTile(id, stream, name, isLocal) {
+            function genderSymbol(g) {
+              if (g === "Male") return " ♂";
+              if (g === "Female") return " ♀";
+              if (g === "Other") return " ⚧";
+              return "";
+            }
+
+            function addTile(id, stream, name, isLocal, gender) {
               let tile = document.getElementById("tile-" + id);
               if (!tile) {
                 tile = document.createElement("div");
                 tile.className = "tile";
                 tile.id = "tile-" + id;
-                tile.innerHTML = '<video autoplay playsinline' + (isLocal ? ' muted' : '') + '></video><div class="label">' + name + (isLocal ? " (You)" : "") + '</div>';
+                const label = name + genderSymbol(gender) + (isLocal ? " (You)" : "");
+                const privateBtn = isLocal ? "" : '<button class="privateCallBtn" onclick="requestPrivateCall(\\'' + id + '\\', \\'' + name.replace(/'/g, "") + '\\')">🔒 Private</button>';
+                tile.innerHTML = '<video autoplay playsinline' + (isLocal ? ' muted' : '') + '></video><div class="label">' + label + '</div>' + privateBtn;
                 document.getElementById("videoGrid").appendChild(tile);
               }
               tile.querySelector("video").srcObject = stream;
@@ -1201,8 +1375,9 @@ const server = http.createServer(async (req, res) => {
               if (tile) tile.remove();
             }
 
-            function createPeerConnection(peerId, peerName) {
+            function createPeerConnection(peerId, peerName, peerGender) {
               const pc = new RTCPeerConnection(rtcConfig);
+              peerGenders[peerId] = peerGender;
 
               pc.onicecandidate = (event) => {
                 if (event.candidate) {
@@ -1211,7 +1386,7 @@ const server = http.createServer(async (req, res) => {
               };
 
               pc.ontrack = (event) => {
-                addTile(peerId, event.streams[0], peerName, false);
+                addTile(peerId, event.streams[0], peerName, false, peerGender);
               };
 
               if (localStream) {
@@ -1224,9 +1399,9 @@ const server = http.createServer(async (req, res) => {
 
             async function start() {
               localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
-              addTile(socket.id || "local", localStream, me, true);
+              addTile(socket.id || "local", localStream, me, true, myGender);
 
-              socket.emit("join-group", { room, name: me });
+              socket.emit("join-group", { room, name: me, gender: myGender });
             }
 
             socket.on("connect", () => {
@@ -1238,20 +1413,20 @@ const server = http.createServer(async (req, res) => {
             // Existing people already in the room -> call each of them
             socket.on("existing-peers", async (peerList) => {
               for (const peer of peerList) {
-                const pc = createPeerConnection(peer.id, peer.name);
+                const pc = createPeerConnection(peer.id, peer.name, peer.gender);
                 const offer = await pc.createOffer();
                 await pc.setLocalDescription(offer);
-                socket.emit("group-offer", { to: peer.id, from: socket.id, offer, name: me });
+                socket.emit("group-offer", { to: peer.id, from: socket.id, offer, name: me, gender: myGender });
               }
             });
 
             // Someone new joined -> wait for their offer
-            socket.on("new-peer", ({ id, name }) => {
-              // no action needed here; they will send us an offer
+            socket.on("new-peer", ({ id, name, gender }) => {
+              peerGenders[id] = gender;
             });
 
-            socket.on("group-offer", async ({ from, offer, name }) => {
-              const pc = createPeerConnection(from, name);
+            socket.on("group-offer", async ({ from, offer, name, gender }) => {
+              const pc = createPeerConnection(from, name, gender);
               await pc.setRemoteDescription(offer);
               const answer = await pc.createAnswer();
               await pc.setLocalDescription(answer);
@@ -1511,6 +1686,247 @@ const server = http.createServer(async (req, res) => {
             socket.on("snl-state", (state) => {
               renderSnlBoard(state);
             });
+
+            // ---- Group text chat ----
+            let chatJoined = false;
+
+            function toggleChatPanel() {
+              const panel = document.getElementById("chatPanel");
+              const isOpen = panel.classList.contains("open");
+              panel.classList.toggle("open", !isOpen);
+
+              if (!isOpen && !chatJoined) {
+                chatJoined = true;
+                socket.emit("get-group-chat-history", { room });
+              }
+            }
+
+            function renderGroupMsg(msg) {
+              const box = document.getElementById("groupMessages");
+              const div = document.createElement("div");
+              div.className = "groupMsg";
+
+              if (msg.type === "image") {
+                div.innerHTML = "<b>" + msg.from + ":</b><br/><img src=\\"" + msg.fileData + "\\" />";
+              } else if (msg.type === "file") {
+                div.innerHTML = "<b>" + msg.from + ":</b><br/><a style=\\"color:#ffd966;\\" href=\\"" + msg.fileData + "\\" download=\\"" + msg.fileName + "\\">📎 " + msg.fileName + "</a>";
+              } else {
+                div.innerHTML = "<b>" + msg.from + ":</b> " + msg.text;
+              }
+              box.appendChild(div);
+              box.scrollTop = box.scrollHeight;
+            }
+
+            socket.on("group-chat-history", (history) => {
+              document.getElementById("groupMessages").innerHTML = "";
+              history.forEach(renderGroupMsg);
+            });
+
+            socket.on("group-chat-message", (msg) => {
+              renderGroupMsg(msg);
+            });
+
+            function sendGroupMessage() {
+              const input = document.getElementById("groupChatInput");
+              const text = input.value.trim();
+              if (!text) return;
+              socket.emit("group-chat-message", { room, from: me, type: "text", text });
+              input.value = "";
+            }
+
+            document.getElementById("groupChatInput").addEventListener("keydown", (e) => {
+              if (e.key === "Enter") sendGroupMessage();
+            });
+
+            function sendGroupFile() {
+              const input = document.getElementById("groupFileInput");
+              const file = input.files[0];
+              if (!file) return;
+              if (file.size > 3 * 1024 * 1024) {
+                alert("Please choose a file under 3MB.");
+                input.value = "";
+                return;
+              }
+              const reader = new FileReader();
+              reader.onload = () => {
+                const type = file.type.startsWith("image/") ? "image" : "file";
+                socket.emit("group-chat-message", {
+                  room, from: me, type, fileName: file.name, fileData: reader.result
+                });
+              };
+              reader.readAsDataURL(file);
+              input.value = "";
+            }
+
+            // ---- Professional emoji picker ----
+            const EMOJI_LIST = ["😀","😁","😂","🤣","😊","😍","😘","😎","🤔","😴","😢","😭","😡","👍","👎","👏","🙏","💪","🤝","👋","❤️","💯","🔥","✨","🎉","🎂","☕","🍕","⚽","🎵","💬","📷","📎","😅","😉","🙂","😇","🥳","🤗","😋"];
+
+            function toggleEmojiPicker() {
+              const picker = document.getElementById("emojiPicker");
+              const isOpen = picker.style.display === "grid";
+              if (!isOpen) {
+                picker.innerHTML = EMOJI_LIST.map((e) => '<span onclick="insertEmoji(\\'' + e + '\\')">' + e + '</span>').join("");
+                picker.style.display = "grid";
+              } else {
+                picker.style.display = "none";
+              }
+            }
+
+            function insertEmoji(emoji) {
+              const input = document.getElementById("groupChatInput");
+              input.value += emoji;
+              input.focus();
+            }
+
+            // ---- Private calls ----
+            let privatePeers = {};
+            let privateLocalStream = null;
+            let currentPrivateRoom = null;
+            let pendingPrivateTarget = null;
+            let privateBigIsRemote = true;
+
+            function requestPrivateCall(peerId, peerName) {
+              pendingPrivateTarget = { id: peerId, name: peerName };
+              socket.emit("private-call-invite", { room, to: peerId, fromId: socket.id, fromName: me });
+              alert("Private call request sent to " + peerName + ". Waiting for them to accept...");
+            }
+
+            socket.on("private-call-invite", ({ fromId, fromName }) => {
+              window.incomingPrivateFrom = { id: fromId, name: fromName };
+              document.getElementById("privateIncomingText").textContent = fromName + " wants a private call with you";
+              document.getElementById("privateIncoming").style.display = "block";
+            });
+
+            function acceptPrivateCall() {
+              document.getElementById("privateIncoming").style.display = "none";
+              const from = window.incomingPrivateFrom;
+              const privateRoomId = [me, from.name, Date.now()].join("-").replace(/[^a-zA-Z0-9-]/g, "");
+              socket.emit("private-call-response", { toId: from.id, accepted: true, privateRoom: privateRoomId, fromName: me });
+              startPrivateCall(privateRoomId);
+            }
+
+            function declinePrivateCall() {
+              document.getElementById("privateIncoming").style.display = "none";
+              const from = window.incomingPrivateFrom;
+              socket.emit("private-call-response", { toId: from.id, accepted: false });
+            }
+
+            socket.on("private-call-response", ({ accepted, privateRoom, fromName }) => {
+              if (!accepted) {
+                alert((pendingPrivateTarget ? pendingPrivateTarget.name : "They") + " declined the private call.");
+                pendingPrivateTarget = null;
+                return;
+              }
+              startPrivateCall(privateRoom);
+            });
+
+            async function startPrivateCall(privateRoomId) {
+              currentPrivateRoom = privateRoomId;
+              document.getElementById("privateCallOverlay").style.display = "block";
+              document.getElementById("privateCallStatus").textContent = "Private call";
+
+              privateLocalStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+              document.getElementById("privateSmallVideo").srcObject = privateLocalStream;
+
+              socket.emit("join-private", { privateRoom: privateRoomId, name: me });
+            }
+
+            function createPrivatePeerConnection(peerId) {
+              const pc = new RTCPeerConnection(rtcConfig);
+              pc.onicecandidate = (event) => {
+                if (event.candidate) {
+                  socket.emit("private-ice-candidate", { to: peerId, from: socket.id, candidate: event.candidate });
+                }
+              };
+              pc.ontrack = (event) => {
+                document.getElementById("privateBigVideo").srcObject = event.streams[0];
+              };
+              if (privateLocalStream) {
+                privateLocalStream.getTracks().forEach((t) => pc.addTrack(t, privateLocalStream));
+              }
+              privatePeers[peerId] = pc;
+              return pc;
+            }
+
+            socket.on("private-existing-peers", async (peerList) => {
+              for (const peer of peerList) {
+                const pc = createPrivatePeerConnection(peer.id);
+                const offer = await pc.createOffer();
+                await pc.setLocalDescription(offer);
+                socket.emit("private-offer", { to: peer.id, from: socket.id, offer, name: me });
+              }
+            });
+
+            socket.on("private-new-peer", ({ id, name }) => {
+              // will receive an offer from them
+            });
+
+            socket.on("private-offer", async ({ from, offer }) => {
+              const pc = createPrivatePeerConnection(from);
+              await pc.setRemoteDescription(offer);
+              const answer = await pc.createAnswer();
+              await pc.setLocalDescription(answer);
+              socket.emit("private-answer", { to: from, from: socket.id, answer });
+            });
+
+            socket.on("private-answer", async ({ from, answer }) => {
+              const pc = privatePeers[from];
+              if (pc) await pc.setRemoteDescription(answer);
+            });
+
+            socket.on("private-ice-candidate", async ({ from, candidate }) => {
+              const pc = privatePeers[from];
+              if (pc) {
+                try { await pc.addIceCandidate(candidate); } catch (err) {}
+              }
+            });
+
+            socket.on("private-peer-left", ({ id }) => {
+              if (privatePeers[id]) {
+                privatePeers[id].close();
+                delete privatePeers[id];
+              }
+            });
+
+            function togglePrivateInviteBox() {
+              const box = document.getElementById("privateInviteBox");
+              const isOpen = box.style.display === "flex";
+              if (!isOpen) {
+                box.innerHTML = "";
+                Object.entries(peerGenders).forEach(([id]) => {
+                  const tile = document.getElementById("tile-" + id);
+                  if (!tile || id === socket.id) return;
+                  const nameLabel = tile.querySelector(".label").textContent;
+                  const btn = document.createElement("button");
+                  btn.textContent = "Invite " + nameLabel;
+                  btn.onclick = () => {
+                    socket.emit("private-call-invite", { room, to: id, fromId: socket.id, fromName: me });
+                    alert("Invited " + nameLabel + " to the private call.");
+                    box.style.display = "none";
+                  };
+                  box.appendChild(btn);
+                });
+                box.style.display = "flex";
+              } else {
+                box.style.display = "none";
+              }
+            }
+
+            function endPrivateCall(notify) {
+              Object.values(privatePeers).forEach((pc) => pc.close());
+              privatePeers = {};
+              if (privateLocalStream) {
+                privateLocalStream.getTracks().forEach((t) => t.stop());
+                privateLocalStream = null;
+              }
+              if (currentPrivateRoom && notify) {
+                socket.emit("leave-private", { privateRoom: currentPrivateRoom });
+              }
+              currentPrivateRoom = null;
+              document.getElementById("privateCallOverlay").style.display = "none";
+              document.getElementById("privateBigVideo").srcObject = null;
+              document.getElementById("privateSmallVideo").srcObject = null;
+            }
 
             start();
           </script>
@@ -2086,7 +2502,9 @@ const io = new Server(server, {
 
 const ringingRooms = new Set();
 const activeCallRooms = new Set();
-const groupRoomMembers = {}; // room -> { socketId: name }
+const groupRoomMembers = {}; // room -> { socketId: {name, gender} }
+const groupChatHistory = {}; // room -> [ recent messages ]
+const privateRoomMembers = {}; // privateRoomId -> { socketId: name }
 const ticTacToeGames = {}; // room -> { board, turn, winner, players }
 const ludoGames = {}; // room -> { players: {color: {socketId, position}}, turnOrder: [], turnIndex, winner, lastRoll }
 const LUDO_PATH_LENGTH = 30;
@@ -2116,20 +2534,25 @@ io.on("connection", (socket) => {
   });
 
   // ---- Group call signaling ----
-  socket.on("join-group", ({ room, name }) => {
+  socket.on("join-group", ({ room, name, gender }) => {
     socket.join("group-" + room);
     socket.data.groupRoom = room;
     socket.data.name = name;
+    socket.data.gender = gender;
 
     if (!groupRoomMembers[room]) groupRoomMembers[room] = {};
 
     // Tell the new person who is already here
-    const existingPeers = Object.entries(groupRoomMembers[room]).map(([id, n]) => ({ id, name: n }));
+    const existingPeers = Object.entries(groupRoomMembers[room]).map(([id, info]) => ({
+      id,
+      name: info.name,
+      gender: info.gender
+    }));
     socket.emit("existing-peers", existingPeers);
 
     // Add them to the room, then tell everyone else
-    groupRoomMembers[room][socket.id] = name;
-    socket.to("group-" + room).emit("new-peer", { id: socket.id, name });
+    groupRoomMembers[room][socket.id] = { name, gender };
+    socket.to("group-" + room).emit("new-peer", { id: socket.id, name, gender });
   });
 
   socket.on("group-offer", ({ to, from, offer, name }) => {
@@ -2142,6 +2565,60 @@ io.on("connection", (socket) => {
 
   socket.on("group-ice-candidate", ({ to, from, candidate }) => {
     io.to(to).emit("group-ice-candidate", { from, candidate });
+  });
+
+  // ---- Group text chat (with recent history buffer) ----
+  socket.on("group-chat-message", (msg) => {
+    if (!groupChatHistory[msg.room]) groupChatHistory[msg.room] = [];
+    groupChatHistory[msg.room].push(msg);
+    if (groupChatHistory[msg.room].length > 50) groupChatHistory[msg.room].shift();
+
+    io.to("group-" + msg.room).emit("group-chat-message", msg);
+  });
+
+  socket.on("get-group-chat-history", ({ room }) => {
+    socket.emit("group-chat-history", groupChatHistory[room] || []);
+  });
+
+  // ---- Private calls within a group room ----
+  socket.on("private-call-invite", ({ room, to, fromId, fromName }) => {
+    io.to(to).emit("private-call-invite", { room, fromId, fromName });
+  });
+
+  socket.on("private-call-response", ({ toId, accepted, privateRoom, fromName }) => {
+    io.to(toId).emit("private-call-response", { accepted, privateRoom, fromName });
+  });
+
+  socket.on("join-private", ({ privateRoom, name }) => {
+    socket.join("private-" + privateRoom);
+    socket.data.privateRoom = privateRoom;
+
+    if (!privateRoomMembers[privateRoom]) privateRoomMembers[privateRoom] = {};
+
+    const existingPeers = Object.entries(privateRoomMembers[privateRoom]).map(([id, n]) => ({ id, name: n }));
+    socket.emit("private-existing-peers", existingPeers);
+
+    privateRoomMembers[privateRoom][socket.id] = name;
+    socket.to("private-" + privateRoom).emit("private-new-peer", { id: socket.id, name });
+  });
+
+  socket.on("private-offer", ({ to, from, offer, name }) => {
+    io.to(to).emit("private-offer", { from, offer, name });
+  });
+
+  socket.on("private-answer", ({ to, from, answer }) => {
+    io.to(to).emit("private-answer", { from, answer });
+  });
+
+  socket.on("private-ice-candidate", ({ to, from, candidate }) => {
+    io.to(to).emit("private-ice-candidate", { from, candidate });
+  });
+
+  socket.on("leave-private", ({ privateRoom }) => {
+    if (privateRoomMembers[privateRoom]) {
+      delete privateRoomMembers[privateRoom][socket.id];
+      socket.to("private-" + privateRoom).emit("private-peer-left", { id: socket.id });
+    }
   });
 
   // ---- Tic-Tac-Toe ----

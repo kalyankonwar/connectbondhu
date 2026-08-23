@@ -1161,24 +1161,43 @@ const server = http.createServer(async (req, res) => {
               bottom:2px; right:2px;
             }
 
-            /* Group text chat panel */
+            /* Participant roster */
+            #roster {
+              display:flex;
+              gap:8px;
+              overflow-x:auto;
+              padding:12px 14px;
+              background:rgba(255,255,255,0.04);
+              border-bottom:1px solid rgba(255,255,255,0.1);
+            }
+            .rosterChip {
+              display:flex; flex-direction:column; align-items:center; gap:4px;
+              text-decoration:none; color:white; flex-shrink:0; width:58px;
+              text-align:center;
+            }
+            .rosterAvatar {
+              width:42px; height:42px; border-radius:50%;
+              background:linear-gradient(135deg,#ffd966,#ff9d3d); color:#3d0f6e;
+              display:flex; align-items:center; justify-content:center; font-weight:700; font-size:16px;
+              border:2px solid rgba(255,255,255,0.2);
+            }
+            .rosterName { font-size:10.5px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; width:100%; }
+            .rosterMe { opacity:0.6; }
+
+            /* Room text chat (main view) */
             #chatPanel {
-              display:none;
-              position:fixed;
-              top:0; right:0; bottom:0;
-              width:100%; max-width:340px;
-              background:#160c2b;
-              border-left:1px solid rgba(255,255,255,0.12);
-              z-index:600;
-              display:none;
+              display:flex;
               flex-direction:column;
+              height:calc(100vh - 300px);
+              min-height:260px;
+              background:#160c2b;
+              margin:0 0 10px;
             }
-            #chatPanel.open { display:flex; }
             #chatPanelHeader {
-              padding:14px; background:linear-gradient(135deg,#3d0f6e,#9333ea);
-              display:flex; justify-content:space-between; align-items:center; font-size:14px; font-weight:600;
+              padding:12px 16px; background:rgba(255,255,255,0.04);
+              display:flex; justify-content:space-between; align-items:center; font-size:13.5px; font-weight:600;
+              border-bottom:1px solid rgba(255,255,255,0.08);
             }
-            #chatPanelHeader span.closeChat { cursor:pointer; font-size:18px; }
             #groupMessages { flex:1; overflow-y:auto; padding:12px; }
             .groupMsg { margin-bottom:10px; font-size:13px; }
             .groupMsg b { color:#ffd966; }
@@ -1245,17 +1264,22 @@ const server = http.createServer(async (req, res) => {
           <div id="topBar">
             <a href="/welcome?name=${me}" style="color:#ffd966; text-decoration:none; font-size:13px; position:absolute; top:16px; left:16px;">&larr; Back</a>
             <h2>👥 ${room}</h2>
-            <p style="margin:4px; font-size:12.5px; color:#ffd966;">Chat, share files, or start a private call with anyone here</p>
+            <p style="margin:4px; font-size:12.5px; color:#ffd966;">Tap a name for a private chat, or chat here with everyone</p>
           </div>
 
-          <div id="videoGrid"></div>
+          <div id="roster"></div>
+
+          <div id="videoGrid" style="display:none;"></div>
 
           <div id="controls">
+            <button onclick="toggleVideoGrid()">🎥 Group Video</button>
+            <button onclick="toggleGamePanel()">🎮 Games</button>
+            <button id="leaveBtn" onclick="leaveCall()">🚪 Leave Room</button>
+          </div>
+
+          <div id="videoSubControls" style="display:none; text-align:center; padding-bottom:10px;">
             <button id="muteBtn" onclick="toggleMute()">🎤 Mute</button>
             <button id="camBtn" onclick="toggleCam()">📷 Camera Off</button>
-            <button onclick="toggleChatPanel()">💬 Chat</button>
-            <button onclick="toggleGamePanel()">🎮 Games</button>
-            <button id="leaveBtn" onclick="leaveCall()">🚪 Leave</button>
           </div>
 
           <div id="gamePanel">
@@ -1292,10 +1316,9 @@ const server = http.createServer(async (req, res) => {
             </div>
           </div>
 
-          <div id="chatPanel">
+          <div id="chatPanel" class="open">
             <div id="chatPanelHeader">
               <span>💬 Room Chat</span>
-              <span class="closeChat" onclick="toggleChatPanel()">&times;</span>
             </div>
             <div id="groupMessages"></div>
             <div id="chatInputBar">
@@ -1397,11 +1420,35 @@ const server = http.createServer(async (req, res) => {
               return pc;
             }
 
-            async function start() {
-              localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
-              addTile(socket.id || "local", localStream, me, true, myGender);
+            let videoStarted = false;
 
+            async function startVideo() {
+              if (videoStarted) return;
+              videoStarted = true;
+              try {
+                localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+              } catch (err) {
+                alert("Could not access camera/mic: " + err.message);
+                videoStarted = false;
+                return;
+              }
+              addTile(socket.id || "local", localStream, me, true, myGender);
               socket.emit("join-group", { room, name: me, gender: myGender });
+            }
+
+            function toggleVideoGrid() {
+              const grid = document.getElementById("videoGrid");
+              const subControls = document.getElementById("videoSubControls");
+              const isOpen = grid.style.display !== "none";
+
+              if (isOpen) {
+                grid.style.display = "none";
+                subControls.style.display = "none";
+              } else {
+                grid.style.display = "grid";
+                subControls.style.display = "block";
+                startVideo();
+              }
             }
 
             socket.on("connect", () => {
@@ -1928,7 +1975,35 @@ const server = http.createServer(async (req, res) => {
               document.getElementById("privateSmallVideo").srcObject = null;
             }
 
-            start();
+            // ---- Participant roster (chat-first landing) ----
+            function renderRoster(list) {
+              const rosterEl = document.getElementById("roster");
+              rosterEl.innerHTML = "";
+
+              const meChip = document.createElement("div");
+              meChip.className = "rosterChip rosterMe";
+              meChip.innerHTML = '<div class="rosterAvatar">' + me.charAt(0).toUpperCase() + '</div><div class="rosterName">' + me + " (You)" + '</div>';
+              rosterEl.appendChild(meChip);
+
+              list.forEach((p) => {
+                const chip = document.createElement("a");
+                chip.className = "rosterChip";
+                chip.href = "/chat?me=" + encodeURIComponent(me) + "&with=" + encodeURIComponent(p.name);
+                chip.innerHTML = '<div class="rosterAvatar">' + p.name.charAt(0).toUpperCase() + '</div><div class="rosterName">' + p.name + genderSymbol(p.gender) + '</div>';
+                rosterEl.appendChild(chip);
+              });
+            }
+
+            socket.on("roster-update", (list) => {
+              renderRoster(list);
+            });
+
+            function startRoom() {
+              socket.emit("join-room-chat", { room, name: me, gender: myGender });
+              socket.emit("get-group-chat-history", { room });
+            }
+
+            startRoom();
           </script>
         </body>
       </html>
@@ -2055,6 +2130,21 @@ const server = http.createServer(async (req, res) => {
             #imageViewer .closeViewer { position:absolute; top:20px; right:25px; color:white; font-size:28px; cursor:pointer; }
 
             #attachBar { display:flex; justify-content:center; gap:6px; margin-top:15px; }
+
+            @keyframes buzzShake {
+              0%, 100% { transform: translateX(0); }
+              10%, 30%, 50%, 70%, 90% { transform: translateX(-8px); }
+              20%, 40%, 60%, 80% { transform: translateX(8px); }
+            }
+            body.buzzing { animation: buzzShake 0.5s; }
+
+            #audioCallAvatar {
+              width:120px; height:120px; border-radius:50%;
+              background:linear-gradient(135deg,#ffd966,#ff9d3d); color:#3d0f6e;
+              display:none; align-items:center; justify-content:center;
+              font-size:48px; font-weight:700;
+              position:absolute; top:50%; left:50%; transform:translate(-50%,-50%);
+            }
             #fileInput { display:none; }
           </style>
         </head>
@@ -2063,7 +2153,9 @@ const server = http.createServer(async (req, res) => {
             <a class="backBtn" href="/welcome?name=${me}">&larr;</a>
             <span class="chatHeaderAvatar">${withBuddy.charAt(0).toUpperCase()}</span>
             <span class="chatHeaderName">${withBuddy}</span>
-            <button class="callBtnTop" onclick="startCall()">📹 Call</button>
+            <button class="callBtnTop" onclick="buzz()" title="Buzz" style="background:rgba(255,217,102,0.2);">🔔</button>
+            <button class="callBtnTop" onclick="startCall('audio')">📞</button>
+            <button class="callBtnTop" onclick="startCall('video')">📹</button>
             <button class="menuBtn" onclick="toggleMenu()">⋮</button>
             <div class="menuDropdown" id="menuDropdown">
               <button onclick="reportUser()">⚠️ Report ${withBuddy}</button>
@@ -2074,6 +2166,7 @@ const server = http.createServer(async (req, res) => {
           <div id="callArea">
             <video id="bigVideo" autoplay playsinline></video>
             <video id="smallVideo" autoplay playsinline muted onclick="swapVideos()"></video>
+            <div id="audioCallAvatar"></div>
             <div id="camOffOverlay">Camera off</div>
             <p id="callStatus"></p>
             <div id="callControls">
@@ -2099,8 +2192,10 @@ const server = http.createServer(async (req, res) => {
             ${messagesHTML || "<i style=\"color:rgba(255,255,255,0.5);\">No messages yet</i>"}
           </div>
 
-          <div id="attachBar" style="max-width:420px; margin:0 auto; display:flex; flex-wrap:wrap; justify-content:center; gap:6px; padding:0 12px;">
+          <div id="attachBar" style="max-width:420px; margin:0 auto; position:relative; display:flex; flex-wrap:wrap; justify-content:center; gap:6px; padding:0 12px;">
+            <div id="dmEmojiPicker" style="display:none; position:absolute; bottom:52px; left:12px; right:12px; background:#221542; border:1px solid rgba(255,255,255,0.15); border-radius:12px; padding:8px; max-height:160px; overflow-y:auto; grid-template-columns: repeat(7, 1fr); gap:4px;"></div>
             <input id="text" placeholder="Type a message" style="flex:1; min-width:120px; padding:11px 14px; border-radius:20px; border:1px solid rgba(255,255,255,0.25); background:rgba(255,255,255,0.08); color:white; font-size:14px;" />
+            <button onclick="toggleDmEmojiPicker()" style="padding:10px 12px; border:none; border-radius:20px; background:rgba(255,255,255,0.12); color:white; cursor:pointer;">😊</button>
             <button onclick="sendMessage()" style="padding:10px 16px; border:none; border-radius:20px; background:#ffd966; color:#3d0f6e; font-weight:700; cursor:pointer;">Send</button>
             <button onclick="document.getElementById('backCameraInput').click()" style="padding:10px 12px; border:none; border-radius:20px; background:rgba(255,255,255,0.12); color:white; cursor:pointer;">📷 Back</button>
             <button onclick="document.getElementById('frontCameraInput').click()" style="padding:10px 12px; border:none; border-radius:20px; background:rgba(255,255,255,0.12); color:white; cursor:pointer;">🤳 Front</button>
@@ -2153,6 +2248,27 @@ const server = http.createServer(async (req, res) => {
               if (!text) return;
               socket.emit("chat message", { room, from: me, to: withBuddy, type: "text", text });
               textBox.value = "";
+            }
+
+            // ---- Emoji picker for 1-on-1 chat ----
+            const DM_EMOJI_LIST = ["😀","😁","😂","🤣","😊","😍","😘","😎","🤔","😴","😢","😭","😡","👍","👎","👏","🙏","💪","🤝","👋","❤️","💯","🔥","✨","🎉","🎂","☕","🍕","⚽","🎵","💬","📷","📎","😅","😉","🙂","😇","🥳","🤗","😋"];
+
+            function toggleDmEmojiPicker() {
+              const picker = document.getElementById("dmEmojiPicker");
+              const isOpen = picker.style.display === "grid";
+              if (!isOpen) {
+                picker.innerHTML = DM_EMOJI_LIST.map((e) => '<span style="font-size:20px; text-align:center; cursor:pointer; padding:4px; border-radius:6px;" onclick="insertDmEmoji(\\'' + e + '\\')">' + e + '</span>').join("");
+                picker.style.display = "grid";
+                picker.style.gridTemplateColumns = "repeat(7, 1fr)";
+              } else {
+                picker.style.display = "none";
+              }
+            }
+
+            function insertDmEmoji(emoji) {
+              const textBox = document.getElementById("text");
+              textBox.value += emoji;
+              textBox.focus();
             }
 
             function sendFile(inputId) {
@@ -2254,6 +2370,39 @@ const server = http.createServer(async (req, res) => {
               window.location.href = "/block-user?blocker=" + encodeURIComponent(me) + "&blocked=" + encodeURIComponent(withBuddy);
             }
 
+            // ---- Buzz (grab attention) ----
+            let lastBuzzSent = 0;
+
+            function playBuzzSound() {
+              const AudioCtx = window.AudioContext || window.webkitAudioContext;
+              const ctx = new AudioCtx();
+              const osc = ctx.createOscillator();
+              const gain = ctx.createGain();
+              osc.frequency.value = 320;
+              osc.type = "square";
+              osc.connect(gain);
+              gain.connect(ctx.destination);
+              gain.gain.setValueAtTime(0.12, ctx.currentTime);
+              osc.start();
+              osc.stop(ctx.currentTime + 0.35);
+              setTimeout(() => ctx.close(), 500);
+            }
+
+            function buzz() {
+              const now = Date.now();
+              if (now - lastBuzzSent < 3000) return; // simple cooldown to avoid spamming
+              lastBuzzSent = now;
+              socket.emit("buzz", { room, from: me });
+            }
+
+            socket.on("buzz", ({ from }) => {
+              document.body.classList.remove("buzzing");
+              void document.body.offsetWidth; // restart animation
+              document.body.classList.add("buzzing");
+              playBuzzSound();
+              if (navigator.vibrate) navigator.vibrate([200, 100, 200]);
+            });
+
             // ---- Video/audio calling ----
             let localStream = null;
             let peerConnection = null;
@@ -2301,11 +2450,33 @@ const server = http.createServer(async (req, res) => {
               }
             }
 
-            async function getLocalStream() {
+            let callMode = "video"; // "video" or "audio"
+
+            async function getLocalStream(mode) {
               if (!localStream) {
-                localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+                localStream = await navigator.mediaDevices.getUserMedia({
+                  video: mode !== "audio",
+                  audio: true
+                });
               }
               return localStream;
+            }
+
+            function applyCallModeUI(mode) {
+              const bigVideo = document.getElementById("bigVideo");
+              const smallVideo = document.getElementById("smallVideo");
+              const avatar = document.getElementById("audioCallAvatar");
+
+              if (mode === "audio") {
+                bigVideo.style.display = "none";
+                smallVideo.style.display = "none";
+                avatar.style.display = "flex";
+                avatar.textContent = withBuddy.charAt(0).toUpperCase();
+              } else {
+                bigVideo.style.display = "block";
+                smallVideo.style.display = "block";
+                avatar.style.display = "none";
+              }
             }
 
             function createPeerConnection() {
@@ -2327,12 +2498,14 @@ const server = http.createServer(async (req, res) => {
               document.getElementById("callArea").style.display = "block";
             }
 
-            async function startCall() {
+            async function startCall(mode) {
+              callMode = mode || "video";
               showCallScreen();
+              applyCallModeUI(callMode);
               document.getElementById("callStatus").textContent = "Calling " + withBuddy + "...";
               playRingtone();
 
-              const stream = await getLocalStream();
+              const stream = await getLocalStream(callMode);
               document.getElementById("smallVideo").srcObject = stream;
 
               peerConnection = createPeerConnection();
@@ -2341,12 +2514,13 @@ const server = http.createServer(async (req, res) => {
               const offer = await peerConnection.createOffer();
               await peerConnection.setLocalDescription(offer);
 
-              socket.emit("call-user", { room, from: me, offer });
+              socket.emit("call-user", { room, from: me, offer, mode: callMode });
             }
 
-            socket.on("incoming-call", ({ from, offer }) => {
+            socket.on("incoming-call", ({ from, offer, mode }) => {
               window.incomingOffer = offer;
-              document.getElementById("callerName").textContent = from;
+              window.incomingCallMode = mode || "video";
+              document.getElementById("callerName").textContent = from + (mode === "audio" ? " (Audio Call)" : " (Video Call)");
               document.getElementById("incomingCall").style.display = "block";
               playRingtone();
             });
@@ -2360,10 +2534,12 @@ const server = http.createServer(async (req, res) => {
             async function answerCall() {
               stopRingtone();
               document.getElementById("incomingCall").style.display = "none";
+              callMode = window.incomingCallMode || "video";
               showCallScreen();
+              applyCallModeUI(callMode);
               document.getElementById("callStatus").textContent = "In call with " + withBuddy;
 
-              const stream = await getLocalStream();
+              const stream = await getLocalStream(callMode);
               document.getElementById("smallVideo").srcObject = stream;
 
               peerConnection = createPeerConnection();
@@ -2503,6 +2679,7 @@ const io = new Server(server, {
 const ringingRooms = new Set();
 const activeCallRooms = new Set();
 const groupRoomMembers = {}; // room -> { socketId: {name, gender} }
+const roomRosterMembers = {}; // room -> { socketId: {name, gender} } (lightweight, no video)
 const groupChatHistory = {}; // room -> [ recent messages ]
 const privateRoomMembers = {}; // privateRoomId -> { socketId: name }
 const ticTacToeGames = {}; // room -> { board, turn, winner, players }
@@ -2531,6 +2708,25 @@ function emitLudoState(room) {
 io.on("connection", (socket) => {
   socket.on("join", ({ room }) => {
     socket.join(room);
+  });
+
+  // ---- Room roster (chat-first landing, no camera needed) ----
+  socket.on("join-room-chat", ({ room, name, gender }) => {
+    socket.join("room-" + room);
+    socket.data.chatRoom = room;
+    socket.data.chatName = name;
+    socket.data.chatGender = gender;
+
+    if (!roomRosterMembers[room]) roomRosterMembers[room] = {};
+    roomRosterMembers[room][socket.id] = { name, gender };
+
+    // Send everyone currently in the room an updated roster (minus themselves)
+    const fullRoster = Object.entries(roomRosterMembers[room]).map(([id, info]) => ({
+      id, name: info.name, gender: info.gender
+    }));
+    fullRoster.forEach((p) => {
+      io.to(p.id).emit("roster-update", fullRoster.filter((other) => other.id !== p.id));
+    });
   });
 
   // ---- Group call signaling ----
@@ -2804,6 +3000,17 @@ io.on("connection", (socket) => {
       socket.to("group-" + room).emit("peer-left", { id: socket.id });
     }
 
+    const chatRoom = socket.data.chatRoom;
+    if (chatRoom && roomRosterMembers[chatRoom]) {
+      delete roomRosterMembers[chatRoom][socket.id];
+      const fullRoster = Object.entries(roomRosterMembers[chatRoom]).map(([id, info]) => ({
+        id, name: info.name, gender: info.gender
+      }));
+      fullRoster.forEach((p) => {
+        io.to(p.id).emit("roster-update", fullRoster.filter((other) => other.id !== p.id));
+      });
+    }
+
     const gameRoom = socket.data.gameRoom;
     if (gameRoom && ticTacToeGames[gameRoom]) {
       const game = ticTacToeGames[gameRoom];
@@ -2867,13 +3074,17 @@ io.on("connection", (socket) => {
   });
 
   // ---- Call signaling ----
-  socket.on("call-user", ({ room, from, offer }) => {
+  socket.on("buzz", ({ room, from }) => {
+    socket.to(room).emit("buzz", { from });
+  });
+
+  socket.on("call-user", ({ room, from, offer, mode }) => {
     if (ringingRooms.has(room) || activeCallRooms.has(room)) {
       socket.emit("call-busy");
       return;
     }
     ringingRooms.add(room);
-    socket.to(room).emit("incoming-call", { from, offer });
+    socket.to(room).emit("incoming-call", { from, offer, mode });
   });
 
   socket.on("make-answer", ({ room, answer }) => {

@@ -362,9 +362,10 @@ const server = http.createServer(async (req, res) => {
       .filter((u) => u.name !== name && !isBlockedEitherWay(name, u.name))
       .map(
         (u) => `
-        <a class="buddyRow" href="/chat?me=${name}&with=${u.name}">
+        <a class="buddyRow" data-name="${u.name}" href="/chat?me=${name}&with=${u.name}">
           <span class="buddyAvatar">${u.name.charAt(0).toUpperCase()}</span>
           <span class="buddyName">${u.name} ${genderBadge(u.gender)}</span>
+          <span class="unreadDot" style="display:none;"></span>
           <span class="buddyStatus">●</span>
         </a>`
       )
@@ -501,6 +502,104 @@ const server = http.createServer(async (req, res) => {
               </a>
             </div>
           </div>
+
+          <div id="incomingCallBanner" style="display:none; position:fixed; top:16px; left:16px; right:16px; background:white; color:black; border-radius:14px; padding:14px; box-shadow:0 8px 24px rgba(0,0,0,0.4); z-index:999; text-align:center;">
+            <p id="incomingCallBannerText" style="margin:0 0 10px; font-weight:600;"></p>
+            <button onclick="answerFromBanner()" style="padding:9px 18px; margin-right:8px; border:none; border-radius:18px; background:#4ade80; font-weight:700; cursor:pointer;">Answer</button>
+            <button onclick="declineFromBanner()" style="padding:9px 18px; border:none; border-radius:18px; background:#e33; color:white; font-weight:700; cursor:pointer;">Decline</button>
+          </div>
+
+          <style>
+            .unreadDot {
+              width:9px; height:9px; border-radius:50%; background:#e33;
+              display:inline-block; margin-left:4px;
+            }
+            @keyframes buzzShake {
+              0%, 100% { transform: translateX(0); }
+              10%, 30%, 50%, 70%, 90% { transform: translateX(-8px); }
+              20%, 40%, 60%, 80% { transform: translateX(8px); }
+            }
+            body.buzzing { animation: buzzShake 0.5s; }
+          </style>
+
+          <script src="/socket.io/socket.io.js"></script>
+          <script>
+            const myName = "${name}";
+            const socket = io();
+            socket.emit("register-user", { name: myName });
+
+            if ("Notification" in window && Notification.permission === "default") {
+              Notification.requestPermission();
+            }
+
+            function playNotifySound() {
+              const AudioCtx = window.AudioContext || window.webkitAudioContext;
+              const ctx = new AudioCtx();
+              const osc = ctx.createOscillator();
+              const gain = ctx.createGain();
+              osc.frequency.value = 700;
+              osc.connect(gain);
+              gain.connect(ctx.destination);
+              gain.gain.setValueAtTime(0.1, ctx.currentTime);
+              osc.start();
+              osc.stop(ctx.currentTime + 0.15);
+              setTimeout(() => ctx.close(), 300);
+            }
+
+            socket.on("message-notification", ({ from, preview }) => {
+              playNotifySound();
+              if (navigator.vibrate) navigator.vibrate(150);
+
+              const row = document.querySelector('.buddyRow[data-name="' + from + '"]');
+              if (row) {
+                const dot = row.querySelector(".unreadDot");
+                if (dot) dot.style.display = "inline-block";
+              }
+
+              if ("Notification" in window && Notification.permission === "granted") {
+                const n = new Notification(from + " sent a message", { body: preview });
+                n.onclick = () => { window.location.href = "/chat?me=" + encodeURIComponent(myName) + "&with=" + encodeURIComponent(from); };
+              }
+            });
+
+            let currentIncomingCall = null;
+
+            socket.on("incoming-call-request", ({ from, mode }) => {
+              currentIncomingCall = { from, mode };
+              playNotifySound();
+              if (navigator.vibrate) navigator.vibrate([200, 100, 200]);
+              document.body.classList.remove("buzzing");
+              void document.body.offsetWidth;
+              document.body.classList.add("buzzing");
+
+              document.getElementById("incomingCallBannerText").textContent =
+                (mode === "audio" ? "📞 " : "📹 ") + from + " is calling you";
+              document.getElementById("incomingCallBanner").style.display = "block";
+
+              if ("Notification" in window && Notification.permission === "granted") {
+                const n = new Notification((mode === "audio" ? "📞 " : "📹 ") + from + " is calling you", { body: "Tap to answer" });
+                n.onclick = () => answerFromBanner();
+              }
+            });
+
+            function answerFromBanner() {
+              if (!currentIncomingCall) return;
+              window.location.href = "/chat?me=" + encodeURIComponent(myName) + "&with=" + encodeURIComponent(currentIncomingCall.from) + "&autoAnswer=1";
+            }
+
+            function declineFromBanner() {
+              document.getElementById("incomingCallBanner").style.display = "none";
+              currentIncomingCall = null;
+            }
+
+            socket.on("buzz", () => {
+              playNotifySound();
+              if (navigator.vibrate) navigator.vibrate([200, 100, 200]);
+              document.body.classList.remove("buzzing");
+              void document.body.offsetWidth;
+              document.body.classList.add("buzzing");
+            });
+          </script>
         </body>
       </html>
     `);
@@ -2213,6 +2312,46 @@ const server = http.createServer(async (req, res) => {
             const socket = io();
 
             socket.emit("join", { room });
+            socket.emit("register-user", { name: me });
+
+            if ("Notification" in window && Notification.permission === "default") {
+              Notification.requestPermission();
+            }
+
+            function playNotifySound() {
+              const AudioCtx = window.AudioContext || window.webkitAudioContext;
+              const ctx = new AudioCtx();
+              const osc = ctx.createOscillator();
+              const gain = ctx.createGain();
+              osc.frequency.value = 700;
+              osc.connect(gain);
+              gain.connect(ctx.destination);
+              gain.gain.setValueAtTime(0.1, ctx.currentTime);
+              osc.start();
+              osc.stop(ctx.currentTime + 0.15);
+              setTimeout(() => ctx.close(), 300);
+            }
+
+            // Notifications for messages/calls from OTHER conversations while this one is open
+            socket.on("message-notification", ({ from, preview }) => {
+              if (from === withBuddy) return; // already visible in this open chat
+              playNotifySound();
+              if (navigator.vibrate) navigator.vibrate(150);
+              if ("Notification" in window && Notification.permission === "granted") {
+                const n = new Notification(from + " sent a message", { body: preview });
+                n.onclick = () => { window.location.href = "/chat?me=" + encodeURIComponent(me) + "&with=" + encodeURIComponent(from); };
+              }
+            });
+
+            socket.on("incoming-call-request", ({ from, mode }) => {
+              if (from === withBuddy) return; // handled by the normal incoming-call popup on this page
+              playNotifySound();
+              if (navigator.vibrate) navigator.vibrate([200, 100, 200]);
+              if ("Notification" in window && Notification.permission === "granted") {
+                const n = new Notification((mode === "audio" ? "📞 " : "📹 ") + from + " is calling you", { body: "Tap to answer" });
+                n.onclick = () => { window.location.href = "/chat?me=" + encodeURIComponent(me) + "&with=" + encodeURIComponent(from) + "&autoAnswer=1"; };
+              }
+            });
 
             // ---- Chat messaging ----
             socket.on("chat message", (msg) => {
@@ -2498,6 +2637,9 @@ const server = http.createServer(async (req, res) => {
               document.getElementById("callArea").style.display = "block";
             }
 
+            let isCallingOut = false;
+            let lastOfferSent = null;
+
             async function startCall(mode) {
               callMode = mode || "video";
               showCallScreen();
@@ -2514,12 +2656,37 @@ const server = http.createServer(async (req, res) => {
               const offer = await peerConnection.createOffer();
               await peerConnection.setLocalDescription(offer);
 
-              socket.emit("call-user", { room, from: me, offer, mode: callMode });
+              isCallingOut = true;
+              lastOfferSent = { offer, mode: callMode };
+              socket.emit("call-user", { room, from: me, to: withBuddy, offer, mode: callMode });
+            }
+
+            // If the person we're calling opens the chat page late (e.g. via a
+            // notification), they'll ask us to resend the offer so they don't miss it.
+            socket.on("request-current-offer", () => {
+              if (isCallingOut && lastOfferSent) {
+                socket.emit("call-user", { room, from: me, to: withBuddy, offer: lastOfferSent.offer, mode: lastOfferSent.mode });
+              }
+            });
+
+            // If we arrived on this page because of a call notification, ask the
+            // caller to (re)send their offer, and auto-answer once it arrives.
+            const urlParams = new URLSearchParams(window.location.search);
+            if (urlParams.get("autoAnswer") === "1") {
+              window.autoAnswerPending = true;
+              setTimeout(() => socket.emit("request-current-offer", { room }), 500);
             }
 
             socket.on("incoming-call", ({ from, offer, mode }) => {
               window.incomingOffer = offer;
               window.incomingCallMode = mode || "video";
+
+              if (window.autoAnswerPending) {
+                window.autoAnswerPending = false;
+                answerCall();
+                return;
+              }
+
               document.getElementById("callerName").textContent = from + (mode === "audio" ? " (Audio Call)" : " (Video Call)");
               document.getElementById("incomingCall").style.display = "block";
               playRingtone();
@@ -2566,6 +2733,7 @@ const server = http.createServer(async (req, res) => {
 
             socket.on("call-answered", async ({ answer }) => {
               stopRingtone();
+              isCallingOut = false;
               document.getElementById("callStatus").textContent = "In call with " + withBuddy;
               await peerConnection.setRemoteDescription(answer);
             });
@@ -2637,6 +2805,7 @@ const server = http.createServer(async (req, res) => {
 
             function hangUp(notifyOther) {
               stopRingtone();
+              isCallingOut = false;
               if (peerConnection) {
                 peerConnection.close();
                 peerConnection = null;
@@ -2708,6 +2877,13 @@ function emitLudoState(room) {
 io.on("connection", (socket) => {
   socket.on("join", ({ room }) => {
     socket.join(room);
+  });
+
+  // ---- Personal notification channel: lets us reach someone wherever they are in the app ----
+  socket.on("register-user", ({ name }) => {
+    if (!name) return;
+    socket.join("user-" + name);
+    socket.data.registeredName = name;
   });
 
   // ---- Room roster (chat-first landing, no camera needed) ----
@@ -3061,6 +3237,16 @@ io.on("connection", (socket) => {
     );
     msg.id = result.lastInsertRowid;
     io.to(msg.room).emit("chat message", msg);
+
+    // Notify the recipient wherever they currently are in the app
+    if (msg.to) {
+      let preview = "New message";
+      if (msg.type === "image") preview = "📷 Photo";
+      else if (msg.type === "file") preview = "📎 " + (msg.fileName || "File");
+      else if (msg.text) preview = msg.text.slice(0, 60);
+
+      io.to("user-" + msg.to).emit("message-notification", { from: msg.from, preview });
+    }
   });
 
   socket.on("edit-message", ({ room, id, newText }) => {
@@ -3078,13 +3264,23 @@ io.on("connection", (socket) => {
     socket.to(room).emit("buzz", { from });
   });
 
-  socket.on("call-user", ({ room, from, offer, mode }) => {
+  socket.on("call-user", ({ room, from, to, offer, mode }) => {
     if (ringingRooms.has(room) || activeCallRooms.has(room)) {
       socket.emit("call-busy");
       return;
     }
     ringingRooms.add(room);
     socket.to(room).emit("incoming-call", { from, offer, mode });
+
+    // Also notify the callee's personal channel, in case they're not on this exact chat page
+    if (to) {
+      io.to("user-" + to).emit("incoming-call-request", { room, from, mode });
+    }
+  });
+
+  // A callee who arrived late (e.g. via a notification) asks the caller to resend the offer
+  socket.on("request-current-offer", ({ room }) => {
+    socket.to(room).emit("request-current-offer");
   });
 
   socket.on("make-answer", ({ room, answer }) => {

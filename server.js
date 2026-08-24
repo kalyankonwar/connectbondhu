@@ -2880,7 +2880,7 @@ const io = new Server(server, {
   maxHttpBufferSize: 15 * 1024 * 1024 // allow larger messages for file sharing (8MB files, base64-encoded)
 });
 
-const ringingRooms = new Set();
+const ringingRoomCallers = new Map(); // room -> socket.id of whoever is currently ringing it
 const activeCallRooms = new Set();
 const groupRoomMembers = {}; // room -> { socketId: {name, gender} }
 const roomRosterMembers = {}; // room -> { socketId: {name, gender} } (lightweight, no video)
@@ -3223,6 +3223,15 @@ io.on("connection", (socket) => {
   });
 
   socket.on("disconnect", () => {
+    // If this socket was in the middle of a 1-on-1 call, free up the room
+    // so it doesn't stay stuck as "busy" forever, and let the other side know.
+    const callRoom = socket.data.activeCallRoom;
+    if (callRoom) {
+      ringingRoomCallers.delete(callRoom);
+      activeCallRooms.delete(callRoom);
+      socket.to(callRoom).emit("hang-up");
+    }
+
     const room = socket.data.groupRoom;
     if (room && groupRoomMembers[room]) {
       delete groupRoomMembers[room][socket.id];
@@ -3318,11 +3327,15 @@ io.on("connection", (socket) => {
   });
 
   socket.on("call-user", ({ room, from, to, offer, mode }) => {
-    if (ringingRooms.has(room) || activeCallRooms.has(room)) {
+    const currentCaller = ringingRoomCallers.get(room);
+    const alreadyRingingByOther = currentCaller && currentCaller !== socket.id;
+
+    if (activeCallRooms.has(room) || alreadyRingingByOther) {
       socket.emit("call-busy");
       return;
     }
-    ringingRooms.add(room);
+    ringingRoomCallers.set(room, socket.id);
+    socket.data.activeCallRoom = room;
     socket.to(room).emit("incoming-call", { from, offer, mode });
 
     // Also notify the callee's personal channel, in case they're not on this exact chat page
@@ -3337,13 +3350,14 @@ io.on("connection", (socket) => {
   });
 
   socket.on("make-answer", ({ room, answer }) => {
-    ringingRooms.delete(room);
+    ringingRoomCallers.delete(room);
     activeCallRooms.add(room);
+    socket.data.activeCallRoom = room;
     socket.to(room).emit("call-answered", { answer });
   });
 
   socket.on("call-rejected", ({ room }) => {
-    ringingRooms.delete(room);
+    ringingRoomCallers.delete(room);
     socket.to(room).emit("call-rejected");
   });
 
@@ -3352,8 +3366,9 @@ io.on("connection", (socket) => {
   });
 
   socket.on("hang-up", ({ room }) => {
-    ringingRooms.delete(room);
+    ringingRoomCallers.delete(room);
     activeCallRooms.delete(room);
+    socket.data.activeCallRoom = null;
     socket.to(room).emit("hang-up");
   });
 });

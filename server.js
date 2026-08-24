@@ -1231,33 +1231,64 @@ const server = http.createServer(async (req, res) => {
             .gamePicker button { padding:6px 12px; margin:2px; border-radius:14px; border:none; }
             .gamePicker button.active { background:#ffd966; }
 
+            #snlBoardWrap {
+              position:relative;
+              width:314px;
+              margin:14px auto;
+              padding:8px;
+              background:linear-gradient(145deg,#6b4423,#4a2f18);
+              border-radius:12px;
+              box-shadow:
+                0 8px 20px rgba(0,0,0,0.5),
+                inset 0 2px 4px rgba(255,255,255,0.15),
+                inset 0 -3px 6px rgba(0,0,0,0.4);
+            }
             #snlBoard {
               display:grid;
               grid-template-columns: repeat(10, 28px);
               grid-template-rows: repeat(10, 28px);
               gap:2px;
-              margin:10px auto;
               width:fit-content;
+              position:relative;
+              z-index:1;
+              border-radius:4px;
+              overflow:hidden;
+              box-shadow: inset 0 2px 8px rgba(0,0,0,0.5);
             }
             .snl-cell {
-              background:#333;
-              font-size:8px;
-              color:#999;
+              background:linear-gradient(145deg,#f0dcae,#e0c589);
+              font-size:9px;
+              font-weight:700;
+              color:#6b4423;
               display:flex;
               align-items:flex-start;
               justify-content:flex-start;
-              padding:1px;
+              padding:2px;
               position:relative;
-              border-radius:2px;
+              box-shadow: inset 0 1px 2px rgba(255,255,255,0.5), inset 0 -1px 2px rgba(0,0,0,0.15);
             }
-            .snl-ladder { background:#2a5; }
-            .snl-snake { background:#a33; }
+            .snl-cell.dark { background:linear-gradient(145deg,#cfa565,#bd9151); }
+            .snl-cell.win {
+              background:linear-gradient(145deg,#ffe27a,#ffb03d);
+              color:#5a2d00;
+              box-shadow: inset 0 0 8px rgba(255,255,255,0.7), 0 0 10px rgba(255,200,60,0.6);
+            }
             .snl-token {
-              width:12px; height:12px;
+              width:14px; height:14px;
               border-radius:50%;
-              border:1px solid white;
               position:absolute;
               bottom:2px; right:2px;
+              box-shadow:0 2px 4px rgba(0,0,0,0.5), inset -2px -2px 3px rgba(0,0,0,0.35), inset 2px 2px 3px rgba(255,255,255,0.6);
+              z-index:3;
+              transition: all 0.25s ease;
+            }
+            #snlOverlay {
+              position:absolute;
+              top:8px; left:8px;
+              width:298px; height:298px;
+              pointer-events:none;
+              z-index:2;
+              filter: drop-shadow(0 2px 3px rgba(0,0,0,0.4));
             }
 
             /* Participant roster */
@@ -1408,7 +1439,10 @@ const server = http.createServer(async (req, res) => {
             <div id="snlGame" style="display:none;">
               <h3 style="margin:4px;">Snakes & Ladders</h3>
               <p id="snlStatus" style="color:#ffd966;">Loading...</p>
-              <div id="snlBoard"></div>
+              <div id="snlBoardWrap">
+                <svg id="snlOverlay"></svg>
+                <div id="snlBoard"></div>
+              </div>
               <button id="snlDiceBtn" onclick="rollSnl()" disabled>🎲</button>
               <br/>
               <button onclick="resetSnl()" style="padding:8px 14px; margin-top:8px;">Play Again</button>
@@ -1765,39 +1799,261 @@ const server = http.createServer(async (req, res) => {
             const SNL_LADDERS = { 4: 14, 9: 31, 20: 38, 28: 84, 40: 59, 51: 67, 63: 81, 71: 91 };
             const SNL_SNAKES = { 17: 7, 54: 34, 62: 19, 64: 60, 87: 24, 93: 73, 95: 75, 99: 78 };
             let mySnlColor = null;
+            let snlBoardDrawn = false;
+
+            // Matches the same zig-zag numbering used to lay out the grid
+            function snlCellCenter(num) {
+              const row = Math.floor((num - 1) / 10);
+              const withinRow = (num - 1) % 10;
+              const leftToRight = row % 2 === 0;
+              const colIndex = leftToRight ? withinRow : 9 - withinRow;
+              const x = colIndex * 30 + 14;
+              const y = (9 - row) * 30 + 14;
+              return { x, y };
+            }
+
+            function drawSnlOverlay() {
+              const svg = document.getElementById("snlOverlay");
+              svg.setAttribute("viewBox", "0 0 298 298");
+              let html = "";
+
+              // Ladders: two rails + rungs, bottom to top
+              Object.entries(SNL_LADDERS).forEach(([bottom, top]) => {
+                const a = snlCellCenter(Number(bottom));
+                const b = snlCellCenter(Number(top));
+                const dx = b.x - a.x, dy = b.y - a.y;
+                const len = Math.sqrt(dx * dx + dy * dy);
+                const nx = -dy / len, ny = dx / len; // perpendicular unit vector
+                const offset = 3.5;
+                const r1 = { x1: a.x + nx * offset, y1: a.y + ny * offset, x2: b.x + nx * offset, y2: b.y + ny * offset };
+                const r2 = { x1: a.x - nx * offset, y1: a.y - ny * offset, x2: b.x - nx * offset, y2: b.y - ny * offset };
+
+                html += '<line x1="' + r1.x1 + '" y1="' + r1.y1 + '" x2="' + r1.x2 + '" y2="' + r1.y2 + '" stroke="#c98a3a" stroke-width="2.5"/>';
+                html += '<line x1="' + r2.x1 + '" y1="' + r2.y1 + '" x2="' + r2.x2 + '" y2="' + r2.y2 + '" stroke="#c98a3a" stroke-width="2.5"/>';
+
+                const rungCount = Math.max(3, Math.round(len / 18));
+                for (let i = 1; i < rungCount; i++) {
+                  const t = i / rungCount;
+                  const rx1 = r1.x1 + (r1.x2 - r1.x1) * t;
+                  const ry1 = r1.y1 + (r1.y2 - r1.y1) * t;
+                  const rx2 = r2.x1 + (r2.x2 - r2.x1) * t;
+                  const ry2 = r2.y1 + (r2.y2 - r2.y1) * t;
+                  html += '<line x1="' + rx1 + '" y1="' + ry1 + '" x2="' + rx2 + '" y2="' + ry2 + '" stroke="#8a5a20" stroke-width="1.5"/>';
+                }
+              });
+
+              // Snakes: realistic tapered body with scales, eyes, and a tongue
+              const snakePalettes = [
+                { light: "#5ecb6e", dark: "#1f7a33" },
+                { light: "#5fb8e8", dark: "#1a5f8a" },
+                { light: "#e87fc4", dark: "#a12f7a" },
+                { light: "#e8c85f", dark: "#a1791f" }
+              ];
+
+              function quadPoint(a, ctrl, b, t) {
+                const x = (1 - t) * (1 - t) * a.x + 2 * (1 - t) * t * ctrl.x + t * t * b.x;
+                const y = (1 - t) * (1 - t) * a.y + 2 * (1 - t) * t * ctrl.y + t * t * b.y;
+                return { x, y };
+              }
+
+              Object.entries(SNL_SNAKES).forEach(([head, tail], i) => {
+                const a = snlCellCenter(Number(head));
+                const b = snlCellCenter(Number(tail));
+                const ctrl = { x: (a.x + b.x) / 2 + (a.y - b.y) * 0.3, y: (a.y + b.y) / 2 + (b.x - a.x) * 0.3 };
+                const palette = snakePalettes[i % snakePalettes.length];
+
+                // Body: overlapping circles, tapering from thick head to thin tail
+                const steps = 26;
+                let bodyHtml = "";
+                for (let s = steps; s >= 0; s--) {
+                  const t = s / steps;
+                  const p = quadPoint(a, ctrl, b, t);
+                  const radius = 5.2 - t * 3.2; // thick near head (t=0), thin near tail (t=1)
+                  const shade = t < 0.5 ? palette.light : palette.dark;
+                  bodyHtml += '<circle cx="' + p.x + '" cy="' + p.y + '" r="' + radius + '" fill="' + shade + '"/>';
+
+                  // small scale marks every few steps
+                  if (s % 3 === 0 && t > 0.05) {
+                    bodyHtml += '<circle cx="' + p.x + '" cy="' + p.y + '" r="' + (radius * 0.4) + '" fill="rgba(0,0,0,0.15)"/>';
+                  }
+                }
+                html += bodyHtml;
+
+                // Head details: eyes + forked tongue pointing away from the body
+                const dirX = a.x - ctrl.x, dirY = a.y - ctrl.y;
+                const dirLen = Math.sqrt(dirX * dirX + dirY * dirY) || 1;
+                const ux = dirX / dirLen, uy = dirY / dirLen;
+                const perpX = -uy, perpY = ux;
+
+                const tongueBaseX = a.x + ux * 5;
+                const tongueBaseY = a.y + uy * 5;
+                const tongueTipX = a.x + ux * 11;
+                const tongueTipY = a.y + uy * 11;
+                const forkSpread = 2.2;
+
+                html += '<line x1="' + tongueBaseX + '" y1="' + tongueBaseY + '" x2="' + (tongueTipX + perpX * forkSpread) + '" y2="' + (tongueTipY + perpY * forkSpread) + '" stroke="#c0203a" stroke-width="1"/>';
+                html += '<line x1="' + tongueBaseX + '" y1="' + tongueBaseY + '" x2="' + (tongueTipX - perpX * forkSpread) + '" y2="' + (tongueTipY - perpY * forkSpread) + '" stroke="#c0203a" stroke-width="1"/>';
+
+                const eyeOffset = 2.4;
+                html += '<circle cx="' + (a.x + perpX * eyeOffset) + '" cy="' + (a.y + perpY * eyeOffset) + '" r="1.3" fill="white"/>';
+                html += '<circle cx="' + (a.x - perpX * eyeOffset) + '" cy="' + (a.y - perpY * eyeOffset) + '" r="1.3" fill="white"/>';
+                html += '<circle cx="' + (a.x + perpX * eyeOffset) + '" cy="' + (a.y + perpY * eyeOffset) + '" r="0.6" fill="black"/>';
+                html += '<circle cx="' + (a.x - perpX * eyeOffset) + '" cy="' + (a.y - perpY * eyeOffset) + '" r="0.6" fill="black"/>';
+              });
+
+              svg.innerHTML = html;
+            }
+
+            // ---- Snakes & Ladders sound effects (Web Audio, no files needed) ----
+            let lastSnlMoveSeq = 0;
+
+            function snlAudioCtx() {
+              const AudioCtx = window.AudioContext || window.webkitAudioContext;
+              return new AudioCtx();
+            }
+
+            function playDiceSound() {
+              const ctx = snlAudioCtx();
+              for (let i = 0; i < 5; i++) {
+                const osc = ctx.createOscillator();
+                const gain = ctx.createGain();
+                osc.type = "square";
+                osc.frequency.value = 180 + Math.random() * 120;
+                osc.connect(gain);
+                gain.connect(ctx.destination);
+                const start = ctx.currentTime + i * 0.06;
+                gain.gain.setValueAtTime(0.08, start);
+                gain.gain.exponentialRampToValueAtTime(0.001, start + 0.05);
+                osc.start(start);
+                osc.stop(start + 0.06);
+              }
+              setTimeout(() => ctx.close(), 500);
+            }
+
+            function playLadderSound() {
+              const ctx = snlAudioCtx();
+              const osc = ctx.createOscillator();
+              const gain = ctx.createGain();
+              osc.type = "triangle";
+              osc.frequency.setValueAtTime(300, ctx.currentTime);
+              osc.frequency.exponentialRampToValueAtTime(900, ctx.currentTime + 0.5);
+              osc.connect(gain);
+              gain.connect(ctx.destination);
+              gain.gain.setValueAtTime(0.12, ctx.currentTime);
+              gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.55);
+              osc.start();
+              osc.stop(ctx.currentTime + 0.55);
+              setTimeout(() => ctx.close(), 700);
+            }
+
+            function playSnakeSound() {
+              const ctx = snlAudioCtx();
+              // Hiss (filtered noise)
+              const bufferSize = ctx.sampleRate * 0.4;
+              const buffer = ctx.createBuffer(1, bufferSize, ctx.sampleRate);
+              const data = buffer.getChannelData(0);
+              for (let i = 0; i < bufferSize; i++) data[i] = (Math.random() * 2 - 1) * 0.3;
+              const noise = ctx.createBufferSource();
+              noise.buffer = buffer;
+              const filter = ctx.createBiquadFilter();
+              filter.type = "bandpass";
+              filter.frequency.value = 2500;
+              const gain = ctx.createGain();
+              gain.gain.setValueAtTime(0.15, ctx.currentTime);
+              gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.4);
+              noise.connect(filter);
+              filter.connect(gain);
+              gain.connect(ctx.destination);
+              noise.start();
+
+              // Descending slide tone
+              const osc = ctx.createOscillator();
+              const oscGain = ctx.createGain();
+              osc.type = "sawtooth";
+              osc.frequency.setValueAtTime(500, ctx.currentTime);
+              osc.frequency.exponentialRampToValueAtTime(120, ctx.currentTime + 0.5);
+              osc.connect(oscGain);
+              oscGain.connect(ctx.destination);
+              oscGain.gain.setValueAtTime(0.08, ctx.currentTime);
+              oscGain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.5);
+              osc.start();
+              osc.stop(ctx.currentTime + 0.5);
+
+              setTimeout(() => ctx.close(), 700);
+            }
+
+            function playWinSound() {
+              const ctx = snlAudioCtx();
+              const notes = [523, 659, 784, 1047]; // C E G C (major arpeggio)
+              notes.forEach((freq, i) => {
+                const osc = ctx.createOscillator();
+                const gain = ctx.createGain();
+                osc.type = "triangle";
+                osc.frequency.value = freq;
+                osc.connect(gain);
+                gain.connect(ctx.destination);
+                const start = ctx.currentTime + i * 0.14;
+                gain.gain.setValueAtTime(0.13, start);
+                gain.gain.exponentialRampToValueAtTime(0.001, start + 0.3);
+                osc.start(start);
+                osc.stop(start + 0.3);
+              });
+              setTimeout(() => ctx.close(), 1000);
+            }
 
             function renderSnlBoard(state) {
               const boardEl = document.getElementById("snlBoard");
-              boardEl.innerHTML = "";
 
-              // Build board visually in the classic boustrophedon (zig-zag) layout,
-              // numbered 1 (bottom-left) to 100 (top-left), 10 columns wide
-              for (let row = 9; row >= 0; row--) {
-                const leftToRight = row % 2 === 0;
-                for (let col = 0; col < 10; col++) {
-                  const colIndex = leftToRight ? col : 9 - col;
-                  const cellNumber = row * 10 + colIndex + 1; // 1-100
+              if (!snlBoardDrawn) {
+                boardEl.innerHTML = "";
 
-                  const cellEl = document.createElement("div");
-                  cellEl.className = "snl-cell";
-                  if (SNL_LADDERS[cellNumber]) cellEl.classList.add("snl-ladder");
-                  if (SNL_SNAKES[cellNumber]) cellEl.classList.add("snl-snake");
-                  cellEl.textContent = cellNumber;
-                  cellEl.style.gridColumn = col + 1;
-                  cellEl.style.gridRow = (10 - row);
+                // Build board visually in the classic boustrophedon (zig-zag) layout,
+                // numbered 1 (bottom-left) to 100 (top-left), 10 columns wide
+                for (let row = 9; row >= 0; row--) {
+                  const leftToRight = row % 2 === 0;
+                  for (let col = 0; col < 10; col++) {
+                    const colIndex = leftToRight ? col : 9 - col;
+                    const cellNumber = row * 10 + colIndex + 1; // 1-100
 
-                  Object.entries(state.players).forEach(([color, p]) => {
-                    if (p.position === cellNumber) {
-                      const token = document.createElement("div");
-                      token.className = "snl-token";
-                      token.style.background = SNL_COLORS[color];
-                      cellEl.appendChild(token);
-                    }
-                  });
+                    const cellEl = document.createElement("div");
+                    cellEl.id = "snl-cell-" + cellNumber;
+                    cellEl.className = "snl-cell" + ((row + col) % 2 === 0 ? " dark" : "") + (cellNumber === 100 ? " win" : "");
+                    cellEl.textContent = cellNumber;
+                    cellEl.style.gridColumn = col + 1;
+                    cellEl.style.gridRow = (10 - row);
 
-                  boardEl.appendChild(cellEl);
+                    boardEl.appendChild(cellEl);
+                  }
+                }
+
+                drawSnlOverlay();
+                snlBoardDrawn = true;
+              }
+
+              // Play the right sound for what just happened (only once per move)
+              if (state.moveSeq && state.moveSeq > lastSnlMoveSeq) {
+                lastSnlMoveSeq = state.moveSeq;
+                playDiceSound();
+                if (state.landedType === "ladder") {
+                  setTimeout(playLadderSound, 250);
+                } else if (state.landedType === "snake") {
+                  setTimeout(playSnakeSound, 250);
+                }
+                if (state.winner) {
+                  setTimeout(playWinSound, 700);
                 }
               }
+
+              // Clear old tokens, then place current ones
+              document.querySelectorAll(".snl-token").forEach((t) => t.remove());
+              Object.entries(state.players).forEach(([color, p]) => {
+                const cellEl = document.getElementById("snl-cell-" + p.position);
+                if (!cellEl) return;
+                const token = document.createElement("div");
+                token.className = "snl-token";
+                token.style.background = SNL_COLORS[color];
+                cellEl.appendChild(token);
+              });
 
               const statusEl = document.getElementById("snlStatus");
               const diceBtn = document.getElementById("snlDiceBtn");
@@ -1822,6 +2078,7 @@ const server = http.createServer(async (req, res) => {
             }
 
             function resetSnl() {
+              lastSnlMoveSeq = 0;
               socket.emit("snl-reset", { room });
             }
 
@@ -3197,11 +3454,15 @@ io.on("connection", (socket) => {
     game.lastRoll = roll;
 
     let newPos = player.position + roll;
+    let landedType = "normal";
     if (newPos > 100) newPos = player.position; // must land exactly on 100
-    if (SNL_LADDERS[newPos]) newPos = SNL_LADDERS[newPos];
-    else if (SNL_SNAKES[newPos]) newPos = SNL_SNAKES[newPos];
+    if (SNL_LADDERS[newPos]) { newPos = SNL_LADDERS[newPos]; landedType = "ladder"; }
+    else if (SNL_SNAKES[newPos]) { newPos = SNL_SNAKES[newPos]; landedType = "snake"; }
 
     player.position = newPos;
+    game.lastMover = currentColor;
+    game.landedType = landedType;
+    game.moveSeq = (game.moveSeq || 0) + 1;
 
     if (player.position === 100) {
       game.winner = currentColor;
@@ -3219,6 +3480,8 @@ io.on("connection", (socket) => {
     game.winner = null;
     game.turnIndex = 0;
     game.lastRoll = null;
+    game.moveSeq = 0;
+    game.landedType = null;
     emitSnlState(room);
   });
 

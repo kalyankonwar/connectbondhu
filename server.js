@@ -22,12 +22,54 @@ try { db.exec("ALTER TABLE messages ADD COLUMN type TEXT DEFAULT 'text'"); } cat
 try { db.exec("ALTER TABLE messages ADD COLUMN file_name TEXT"); } catch (e) {}
 try { db.exec("ALTER TABLE messages ADD COLUMN file_data TEXT"); } catch (e) {}
 try { db.exec("ALTER TABLE users ADD COLUMN gender TEXT"); } catch (e) {}
+try { db.exec("ALTER TABLE users ADD COLUMN profile_pic TEXT"); } catch (e) {}
+try { db.exec("ALTER TABLE messages ADD COLUMN reply_to_id INTEGER"); } catch (e) {}
+try { db.exec("ALTER TABLE messages ADD COLUMN reply_to_from TEXT"); } catch (e) {}
+try { db.exec("ALTER TABLE messages ADD COLUMN reply_to_preview TEXT"); } catch (e) {}
+
+db.exec(`
+  CREATE TABLE IF NOT EXISTS reactions (
+    message_id INTEGER,
+    user_name TEXT,
+    emoji TEXT,
+    PRIMARY KEY (message_id, user_name)
+  )
+`);
+
+db.exec(`
+  CREATE TABLE IF NOT EXISTS read_receipts (
+    reader_name TEXT,
+    other_name TEXT,
+    last_read_id INTEGER,
+    PRIMARY KEY (reader_name, other_name)
+  )
+`);
+
+function getReactionsForMessages(messageIds) {
+  if (!messageIds.length) return {};
+  const placeholders = messageIds.map(() => "?").join(",");
+  const rows = db.prepare(`SELECT * FROM reactions WHERE message_id IN (${placeholders})`).all(...messageIds);
+  const grouped = {};
+  rows.forEach((r) => {
+    if (!grouped[r.message_id]) grouped[r.message_id] = {};
+    if (!grouped[r.message_id][r.emoji]) grouped[r.message_id][r.emoji] = [];
+    grouped[r.message_id][r.emoji].push(r.user_name);
+  });
+  return grouped;
+}
 
 function genderBadge(gender) {
   if (gender === "Male") return '<span style="color:#5aa9ff;">♂</span>';
   if (gender === "Female") return '<span style="color:#ff8fc7;">♀</span>';
   if (gender === "Other") return '<span style="color:#c58fff;">⚧</span>';
   return "";
+}
+
+function avatarHTML(name, profilePic, sizeStyle) {
+  if (profilePic) {
+    return `<img src="${profilePic}" style="${sizeStyle} border-radius:50%; object-fit:cover;" />`;
+  }
+  return `<span style="${sizeStyle} border-radius:50%; background:linear-gradient(135deg,#ffd966,#ff9d3d); color:#3d0f6e; display:flex; align-items:center; justify-content:center; font-weight:700;">${name.charAt(0).toUpperCase()}</span>`;
 }
 
 db.exec(`
@@ -76,18 +118,46 @@ function slugify(text) {
     .replace(/(^-|-$)/g, "");
 }
 
-function renderMessageHTML(m, viewerName) {
+function reactionsBarHTML(msgId, reactionsForMsg) {
+  if (!reactionsForMsg) return "";
+  const entries = Object.entries(reactionsForMsg);
+  if (!entries.length) return "";
+  return (
+    '<div class="reactionsBar">' +
+    entries.map(([emoji, users]) => `<span class="reactionPill" onclick="toggleReaction(${msgId}, '${emoji}')">${emoji} ${users.length}</span>`).join("") +
+    "</div>"
+  );
+}
+
+function replyPreviewHTML(m) {
+  if (!m.reply_to_id) return "";
+  return `<div class="replyPreview">↩ ${m.reply_to_from}: ${(m.reply_to_preview || "").slice(0, 60)}</div>`;
+}
+
+function ticksHTML(m, mine, otherLastReadId) {
+  if (!mine) return "";
+  const read = otherLastReadId && m.id <= otherLastReadId;
+  return `<span class="msgTicks" style="color:${read ? "#4fc3f7" : "rgba(255,255,255,0.4)"};">${read ? "✓✓" : "✓"}</span>`;
+}
+
+function renderMessageHTML(m, viewerName, reactionsMap, otherLastReadId) {
   const mine = m.from_user === viewerName;
   const actions = mine
     ? `<span class="msgActions">${m.type === "text" ? `<button onclick="editMsg(${m.id}, this)">Edit</button>` : ""}<button onclick="deleteMsg(${m.id})">Delete</button></span>`
-    : "";
+    : `<span class="msgActions"><button onclick="startReply(${m.id}, '${m.from_user}')">Reply</button></span>`;
+  const reactBtn = `<button class="reactBtn" onclick="openEmojiReactPicker(${m.id})">+</button>`;
+  const reactions = reactionsMap ? reactionsBarHTML(m.id, reactionsMap[m.id]) : "";
+  const reply = replyPreviewHTML(m);
+  const ticks = ticksHTML(m, mine, otherLastReadId);
 
   if (m.type === "image") {
-    return `<div class="msgRow" data-id="${m.id}"><b>${m.from_user}:</b><br/><img src="${m.file_data}" onclick="openImageViewer('${m.file_data}')" style="max-width:220px; border-radius:6px; margin-top:4px; cursor:pointer;" />${actions}</div>`;
+    return `<div class="msgRow" data-id="${m.id}">${reply}<b>${m.from_user}:</b><br/><img src="${m.file_data}" onclick="openImageViewer('${m.file_data}')" style="max-width:220px; border-radius:6px; margin-top:4px; cursor:pointer;" />${ticks}${actions}${reactBtn}${reactions}</div>`;
   } else if (m.type === "file") {
-    return `<div class="msgRow" data-id="${m.id}"><b>${m.from_user}:</b><br/><a href="${m.file_data}" download="${m.file_name}">📎 ${m.file_name}</a>${actions}</div>`;
+    return `<div class="msgRow" data-id="${m.id}">${reply}<b>${m.from_user}:</b><br/><a href="${m.file_data}" download="${m.file_name}">📎 ${m.file_name}</a>${ticks}${actions}${reactBtn}${reactions}</div>`;
+  } else if (m.type === "voice") {
+    return `<div class="msgRow" data-id="${m.id}">${reply}<b>${m.from_user}:</b><br/><audio controls src="${m.file_data}" style="height:32px; max-width:200px;"></audio>${ticks}${actions}${reactBtn}${reactions}</div>`;
   } else {
-    return `<div class="msgRow" data-id="${m.id}"><b>${m.from_user}:</b> <span class="msgText">${m.text}</span>${actions}</div>`;
+    return `<div class="msgRow" data-id="${m.id}">${reply}<b>${m.from_user}:</b> <span class="msgText">${m.text}</span>${ticks}${actions}${reactBtn}${reactions}</div>`;
   }
 }
 
@@ -160,6 +230,24 @@ const server = http.createServer(async (req, res) => {
 
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ reply }));
+    } catch (err) {
+      res.writeHead(500, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: err.message }));
+    }
+    return;
+  }
+
+  if (req.method === "POST" && parsedUrl.pathname === "/api/set-profile-pic") {
+    try {
+      const body = JSON.parse(await readRequestBody(req));
+      const { name, imageData } = body;
+      if (!name || !imageData) throw new Error("Missing required fields");
+      if (imageData.length > 2 * 1024 * 1024) throw new Error("Image too large");
+
+      db.prepare("UPDATE users SET profile_pic = ? WHERE name = ?").run(imageData, name);
+
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ success: true }));
     } catch (err) {
       res.writeHead(500, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ error: err.message }));
@@ -357,13 +445,16 @@ const server = http.createServer(async (req, res) => {
       db.prepare("INSERT INTO users (name, gender) VALUES (?, ?) ON CONFLICT(name) DO UPDATE SET gender = excluded.gender").run(name, gender || null);
     }
 
-    const allUsers = db.prepare("SELECT name, gender FROM users").all();
+    const myUserRow = db.prepare("SELECT profile_pic FROM users WHERE name = ?").get(name) || {};
+    const myProfilePic = myUserRow.profile_pic || "";
+
+    const allUsers = db.prepare("SELECT name, gender, profile_pic FROM users").all();
     const buddyListHTML = allUsers
       .filter((u) => u.name !== name && !isBlockedEitherWay(name, u.name))
       .map(
         (u) => `
         <a class="buddyRow" data-name="${u.name}" href="/chat?me=${name}&with=${u.name}">
-          <span class="buddyAvatar">${u.name.charAt(0).toUpperCase()}</span>
+          ${avatarHTML(u.name, u.profile_pic, "width:36px; height:36px; flex-shrink:0;")}
           <span class="buddyName">${u.name} ${genderBadge(u.gender)}</span>
           <span class="unreadDot" style="display:none;"></span>
           <span class="buddyStatus">●</span>
@@ -460,6 +551,11 @@ const server = http.createServer(async (req, res) => {
         <body>
           <div class="header" style="position:relative;">
             <a href="/welcome?name=${name}" style="position:absolute; top:16px; right:16px; color:#ffd966; font-size:20px; text-decoration:none;" title="Refresh">⟳</a>
+            <div style="position:relative; width:64px; height:64px; margin:0 auto 8px;">
+              <div id="myAvatarDisplay">${avatarHTML(name, myProfilePic, "width:64px; height:64px; font-size:24px;")}</div>
+              <button onclick="document.getElementById('profilePicInput').click()" style="position:absolute; bottom:-2px; right:-2px; width:24px; height:24px; border-radius:50%; background:#ffd966; border:2px solid #3d0f6e; font-size:11px; cursor:pointer;">✏️</button>
+              <input type="file" id="profilePicInput" accept="image/*" style="display:none;" onchange="uploadProfilePic()" />
+            </div>
             <h1>Welcome, ${name}!</h1>
             <p>What would you like to do?</p>
           </div>
@@ -525,6 +621,37 @@ const server = http.createServer(async (req, res) => {
           <script src="/socket.io/socket.io.js"></script>
           <script>
             const myName = "${name}";
+
+            function uploadProfilePic() {
+              const input = document.getElementById("profilePicInput");
+              const file = input.files[0];
+              if (!file) return;
+              if (file.size > 2 * 1024 * 1024) {
+                alert("Please choose an image under 2MB.");
+                input.value = "";
+                return;
+              }
+              const reader = new FileReader();
+              reader.onload = async () => {
+                try {
+                  const res = await fetch("/api/set-profile-pic", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ name: myName, imageData: reader.result })
+                  });
+                  const data = await res.json();
+                  if (data.error) {
+                    alert("Error: " + data.error);
+                  } else {
+                    document.getElementById("myAvatarDisplay").innerHTML =
+                      '<img src="' + reader.result + '" style="width:64px; height:64px; border-radius:50%; object-fit:cover;" />';
+                  }
+                } catch (err) {
+                  alert("Could not upload photo.");
+                }
+              };
+              reader.readAsDataURL(file);
+            }
             const socket = io();
             socket.emit("register-user", { name: myName });
 
@@ -2424,7 +2551,20 @@ const server = http.createServer(async (req, res) => {
       )
       .all(me, withBuddy, withBuddy, me);
 
-    const messagesHTML = conversation.map((m) => renderMessageHTML(m, me)).join("");
+    const reactionsMap = getReactionsForMessages(conversation.map((m) => m.id));
+
+    const otherReadRow = db.prepare("SELECT last_read_id FROM read_receipts WHERE reader_name = ? AND other_name = ?").get(withBuddy, me);
+    const otherLastReadId = otherReadRow ? otherReadRow.last_read_id : 0;
+
+    // Mark this whole conversation as read by me, up to the latest message
+    if (conversation.length) {
+      const latestId = conversation[conversation.length - 1].id;
+      db.prepare(
+        "INSERT INTO read_receipts (reader_name, other_name, last_read_id) VALUES (?, ?, ?) ON CONFLICT(reader_name, other_name) DO UPDATE SET last_read_id = excluded.last_read_id"
+      ).run(me, withBuddy, latestId);
+    }
+
+    const messagesHTML = conversation.map((m) => renderMessageHTML(m, me, reactionsMap, otherLastReadId)).join("");
 
     res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
     res.end(`
@@ -2516,6 +2656,23 @@ const server = http.createServer(async (req, res) => {
             .msgActions { display:inline-block; margin-left:6px; }
             .msgActions button { font-size:11px; padding:2px 6px; margin-left:3px; border:none; border-radius:4px; background:#eee; cursor:pointer; }
 
+            .reactBtn { font-size:11px; padding:1px 6px; margin-left:4px; border:none; border-radius:10px; background:rgba(0,0,0,0.08); cursor:pointer; color:#555; }
+            .reactionsBar { margin-top:3px; display:flex; gap:4px; flex-wrap:wrap; }
+            .reactionPill { font-size:11px; background:rgba(0,0,0,0.07); border-radius:10px; padding:1px 7px; cursor:pointer; }
+            .replyPreview { font-size:11px; background:rgba(0,0,0,0.06); border-left:3px solid #9333ea; padding:3px 8px; margin-bottom:3px; border-radius:4px; color:#555; }
+            .msgTicks { font-size:11px; margin-left:5px; }
+
+            #reactPicker { display:none; position:fixed; background:white; border-radius:10px; padding:6px; box-shadow:0 4px 14px rgba(0,0,0,0.3); z-index:1200; gap:4px; }
+            #reactPicker span { font-size:20px; cursor:pointer; padding:2px; }
+
+            #replyBar { display:none; background:rgba(255,255,255,0.9); color:#333; padding:8px 12px; border-radius:10px; max-width:420px; margin:0 auto 6px; font-size:12.5px; position:relative; }
+            #replyBar .cancelReply { position:absolute; top:4px; right:8px; cursor:pointer; color:#999; }
+
+            #typingIndicator { max-width:420px; margin:0 auto; padding:0 16px; font-size:12px; color:rgba(255,255,255,0.6); min-height:16px; }
+
+            #voiceRecordBtn.recording { background:#e33 !important; animation: pulseRec 1s infinite; }
+            @keyframes pulseRec { 0%, 100% { opacity:1; } 50% { opacity:0.5; } }
+
             #imageViewer { display:none; position:fixed; top:0; left:0; right:0; bottom:0; background:rgba(0,0,0,0.9); z-index:1000; align-items:center; justify-content:center; }
             #imageViewer img { max-width:92%; max-height:92%; border-radius:6px; }
             #imageViewer .closeViewer { position:absolute; top:20px; right:25px; color:white; font-size:28px; cursor:pointer; }
@@ -2583,10 +2740,22 @@ const server = http.createServer(async (req, res) => {
             ${messagesHTML || "<i style=\"color:rgba(255,255,255,0.5);\">No messages yet</i>"}
           </div>
 
+          <div id="typingIndicator"></div>
+
+          <div id="replyBar">
+            <span class="cancelReply" onclick="cancelReply()">&times;</span>
+            <span id="replyBarText"></span>
+          </div>
+
+          <div id="reactPicker">
+            ${["👍", "❤️", "😂", "😮", "😢", "🙏"].map((e) => `<span onclick="sendReaction('${e}')">${e}</span>`).join("")}
+          </div>
+
           <div id="attachBar" style="max-width:420px; margin:0 auto; position:relative; display:flex; flex-wrap:wrap; justify-content:center; gap:6px; padding:0 12px;">
             <div id="dmEmojiPicker" style="display:none; position:absolute; bottom:52px; left:12px; right:12px; background:#221542; border:1px solid rgba(255,255,255,0.15); border-radius:12px; padding:8px; max-height:160px; overflow-y:auto; grid-template-columns: repeat(7, 1fr); gap:4px;"></div>
             <input id="text" placeholder="Type a message" style="flex:1; min-width:120px; padding:11px 14px; border-radius:20px; border:1px solid rgba(255,255,255,0.25); background:rgba(255,255,255,0.08); color:white; font-size:14px;" />
             <button onclick="toggleDmEmojiPicker()" style="padding:10px 12px; border:none; border-radius:20px; background:rgba(255,255,255,0.12); color:white; cursor:pointer;">😊</button>
+            <button id="voiceRecordBtn" onclick="toggleVoiceRecording()" style="padding:10px 12px; border:none; border-radius:20px; background:rgba(255,255,255,0.12); color:white; cursor:pointer;">🎤</button>
             <button onclick="sendMessage()" style="padding:10px 16px; border:none; border-radius:20px; background:#ffd966; color:#3d0f6e; font-weight:700; cursor:pointer;">Send</button>
             <button onclick="document.getElementById('backCameraInput').click()" style="padding:10px 12px; border:none; border-radius:20px; background:rgba(255,255,255,0.12); color:white; cursor:pointer;">📷 Back</button>
             <button onclick="document.getElementById('frontCameraInput').click()" style="padding:10px 12px; border:none; border-radius:20px; background:rgba(255,255,255,0.12); color:white; cursor:pointer;">🤳 Front</button>
@@ -2648,37 +2817,214 @@ const server = http.createServer(async (req, res) => {
             // ---- Chat messaging ----
             socket.on("chat message", (msg) => {
               addMessageToBox(msg);
+              socket.emit("mark-read", { room, reader: me, other: withBuddy });
             });
 
-            function actionsHTML(id, isText) {
-              if (!isText === undefined) isText = true;
-              let editBtn = isText ? '<button onclick="editMsg(' + id + ', this)">Edit</button>' : "";
-              return '<span class="msgActions">' + editBtn + '<button onclick="deleteMsg(' + id + ')">Delete</button></span>';
+            function actionsHTML(id, isText, mine) {
+              if (mine) {
+                let editBtn = isText ? '<button onclick="editMsg(' + id + ', this)">Edit</button>' : "";
+                return '<span class="msgActions">' + editBtn + '<button onclick="deleteMsg(' + id + ')">Delete</button></span>';
+              }
+              return '<span class="msgActions"><button onclick="startReply(' + id + ', \\'' + me.replace(/'/g, "") + '\\')">Reply</button></span>';
+            }
+
+            function replyPreviewClientHTML(msg) {
+              if (!msg.replyToId) return "";
+              return '<div class="replyPreview">↩ ' + msg.replyToFrom + ': ' + (msg.replyToPreview || "").slice(0, 60) + '</div>';
             }
 
             function addMessageToBox(msg) {
               const box = document.getElementById("messages");
               const mine = msg.from === me;
-              const actions = mine ? actionsHTML(msg.id, msg.type === "text") : "";
+              const actions = actionsHTML(msg.id, msg.type === "text", mine);
+              const reactBtn = '<button class="reactBtn" onclick="openEmojiReactPicker(' + msg.id + ')">+</button>';
+              const reply = replyPreviewClientHTML(msg);
+              const ticks = mine ? '<span class="msgTicks" data-tick-for="' + msg.id + '" style="color:rgba(255,255,255,0.4);">✓</span>' : "";
               let html = "";
 
               if (msg.type === "image") {
-                html = '<div class="msgRow" data-id="' + msg.id + '"><b>' + msg.from + ':</b><br/><img src="' + msg.fileData + '" onclick="openImageViewer(this.src)" style="max-width:220px; border-radius:6px; margin-top:4px; cursor:pointer;" />' + actions + '</div>';
+                html = '<div class="msgRow" data-id="' + msg.id + '">' + reply + '<b>' + msg.from + ':</b><br/><img src="' + msg.fileData + '" onclick="openImageViewer(this.src)" style="max-width:220px; border-radius:6px; margin-top:4px; cursor:pointer;" />' + ticks + actions + reactBtn + '</div>';
               } else if (msg.type === "file") {
-                html = '<div class="msgRow" data-id="' + msg.id + '"><b>' + msg.from + ':</b><br/><a href="' + msg.fileData + '" download="' + msg.fileName + '">📎 ' + msg.fileName + '</a>' + actions + '</div>';
+                html = '<div class="msgRow" data-id="' + msg.id + '">' + reply + '<b>' + msg.from + ':</b><br/><a href="' + msg.fileData + '" download="' + msg.fileName + '">📎 ' + msg.fileName + '</a>' + ticks + actions + reactBtn + '</div>';
+              } else if (msg.type === "voice") {
+                html = '<div class="msgRow" data-id="' + msg.id + '">' + reply + '<b>' + msg.from + ':</b><br/><audio controls src="' + msg.fileData + '" style="height:32px; max-width:200px;"></audio>' + ticks + actions + reactBtn + '</div>';
               } else {
-                html = '<div class="msgRow" data-id="' + msg.id + '"><b>' + msg.from + ':</b> <span class="msgText">' + msg.text + '</span>' + actions + '</div>';
+                html = '<div class="msgRow" data-id="' + msg.id + '">' + reply + '<b>' + msg.from + ':</b> <span class="msgText">' + msg.text + '</span>' + ticks + actions + reactBtn + '</div>';
               }
               box.insertAdjacentHTML("beforeend", html);
               box.scrollTop = box.scrollHeight;
+            }
+
+            // ---- Reply-to ----
+            let replyingTo = null;
+
+            function startReply(id, fromName) {
+              const row = document.querySelector('.msgRow[data-id="' + id + '"]');
+              let preview = "message";
+              if (row) {
+                const textSpan = row.querySelector(".msgText");
+                preview = textSpan ? textSpan.textContent : "attachment";
+              }
+              replyingTo = { id, from: fromName, preview: preview.slice(0, 60) };
+              document.getElementById("replyBarText").textContent = "Replying to " + fromName + ": " + preview.slice(0, 40);
+              document.getElementById("replyBar").style.display = "block";
+              document.getElementById("text").focus();
+            }
+
+            function cancelReply() {
+              replyingTo = null;
+              document.getElementById("replyBar").style.display = "none";
+            }
+
+            // ---- Reactions ----
+            let reactingToId = null;
+
+            function openEmojiReactPicker(id) {
+              reactingToId = id;
+              const picker = document.getElementById("reactPicker");
+              const row = document.querySelector('.msgRow[data-id="' + id + '"]');
+              const rect = row.getBoundingClientRect();
+              picker.style.top = (window.scrollY + rect.top - 44) + "px";
+              picker.style.left = Math.max(10, rect.left) + "px";
+              picker.style.display = "flex";
+            }
+
+            function sendReaction(emoji) {
+              if (reactingToId) {
+                socket.emit("toggle-reaction", { room, messageId: reactingToId, user: me, emoji });
+              }
+              document.getElementById("reactPicker").style.display = "none";
+            }
+
+            function toggleReaction(id, emoji) {
+              socket.emit("toggle-reaction", { room, messageId: id, user: me, emoji });
+            }
+
+            document.addEventListener("click", (e) => {
+              if (!e.target.closest("#reactPicker") && !e.target.closest(".reactBtn")) {
+                document.getElementById("reactPicker").style.display = "none";
+              }
+            });
+
+            socket.on("reaction-updated", ({ messageId, emoji, users }) => {
+              const row = document.querySelector('.msgRow[data-id="' + messageId + '"]');
+              if (!row) return;
+              let bar = row.querySelector(".reactionsBar");
+              if (!bar) {
+                bar = document.createElement("div");
+                bar.className = "reactionsBar";
+                row.appendChild(bar);
+              }
+              let pill = bar.querySelector('[data-emoji="' + emoji + '"]');
+              if (users.length === 0) {
+                if (pill) pill.remove();
+              } else {
+                if (!pill) {
+                  pill = document.createElement("span");
+                  pill.className = "reactionPill";
+                  pill.setAttribute("data-emoji", emoji);
+                  pill.onclick = () => toggleReaction(messageId, emoji);
+                  bar.appendChild(pill);
+                }
+                pill.textContent = emoji + " " + users.length;
+              }
+            });
+
+            // ---- Typing indicator ----
+            let typingTimeout = null;
+            document.getElementById("text").addEventListener("input", () => {
+              socket.emit("typing", { room, from: me });
+              clearTimeout(typingTimeout);
+              typingTimeout = setTimeout(() => {
+                socket.emit("stop-typing", { room, from: me });
+              }, 1500);
+            });
+
+            let typingIndicatorTimeout = null;
+            socket.on("typing", ({ from }) => {
+              if (from !== withBuddy) return;
+              document.getElementById("typingIndicator").textContent = from + " is typing...";
+              clearTimeout(typingIndicatorTimeout);
+              typingIndicatorTimeout = setTimeout(() => {
+                document.getElementById("typingIndicator").textContent = "";
+              }, 3000);
+            });
+
+            socket.on("stop-typing", ({ from }) => {
+              if (from !== withBuddy) return;
+              document.getElementById("typingIndicator").textContent = "";
+            });
+
+            // ---- Read receipts ----
+            socket.emit("mark-read", { room, reader: me, other: withBuddy });
+
+            socket.on("read-updated", ({ upToId }) => {
+              document.querySelectorAll(".msgTicks").forEach((el) => {
+                const id = parseInt(el.getAttribute("data-tick-for"), 10);
+                if (id <= upToId) {
+                  el.textContent = "✓✓";
+                  el.style.color = "#4fc3f7";
+                }
+              });
+            });
+
+            // ---- Voice messages ----
+            let mediaRecorder = null;
+            let audioChunks = [];
+            let isRecording = false;
+
+            async function toggleVoiceRecording() {
+              const btn = document.getElementById("voiceRecordBtn");
+              if (!isRecording) {
+                try {
+                  const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                  mediaRecorder = new MediaRecorder(stream);
+                  audioChunks = [];
+                  mediaRecorder.ondataavailable = (e) => audioChunks.push(e.data);
+                  mediaRecorder.onstop = () => {
+                    const blob = new Blob(audioChunks, { type: "audio/webm" });
+                    const reader = new FileReader();
+                    reader.onload = () => {
+                      socket.emit("chat message", {
+                        room, from: me, to: withBuddy, type: "voice",
+                        fileName: "voice-message.webm", fileData: reader.result,
+                        replyToId: replyingTo ? replyingTo.id : null,
+                        replyToFrom: replyingTo ? replyingTo.from : null,
+                        replyToPreview: replyingTo ? replyingTo.preview : null
+                      });
+                      cancelReply();
+                    };
+                    reader.readAsDataURL(blob);
+                    stream.getTracks().forEach((t) => t.stop());
+                  };
+                  mediaRecorder.start();
+                  isRecording = true;
+                  btn.classList.add("recording");
+                  btn.textContent = "⏹";
+                } catch (err) {
+                  alert("Could not access microphone: " + err.message);
+                }
+              } else {
+                mediaRecorder.stop();
+                isRecording = false;
+                btn.classList.remove("recording");
+                btn.textContent = "🎤";
+              }
             }
 
             function sendMessage() {
               const textBox = document.getElementById("text");
               const text = textBox.value;
               if (!text) return;
-              socket.emit("chat message", { room, from: me, to: withBuddy, type: "text", text });
+              socket.emit("chat message", {
+                room, from: me, to: withBuddy, type: "text", text,
+                replyToId: replyingTo ? replyingTo.id : null,
+                replyToFrom: replyingTo ? replyingTo.from : null,
+                replyToPreview: replyingTo ? replyingTo.preview : null
+              });
               textBox.value = "";
+              cancelReply();
+              socket.emit("stop-typing", { room, from: me });
             }
 
             // ---- Emoji picker for 1-on-1 chat ----
@@ -3551,14 +3897,17 @@ io.on("connection", (socket) => {
     }
 
     const result = db.prepare(
-      "INSERT INTO messages (from_user, to_user, text, type, file_name, file_data) VALUES (?, ?, ?, ?, ?, ?)"
+      "INSERT INTO messages (from_user, to_user, text, type, file_name, file_data, reply_to_id, reply_to_from, reply_to_preview) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
     ).run(
       msg.from,
       msg.to,
       msg.text || null,
       msg.type || "text",
       msg.fileName || null,
-      msg.fileData || null
+      msg.fileData || null,
+      msg.replyToId || null,
+      msg.replyToFrom || null,
+      msg.replyToPreview || null
     );
     msg.id = result.lastInsertRowid;
     io.to(msg.room).emit("chat message", msg);
@@ -3568,10 +3917,54 @@ io.on("connection", (socket) => {
       let preview = "New message";
       if (msg.type === "image") preview = "📷 Photo";
       else if (msg.type === "file") preview = "📎 " + (msg.fileName || "File");
+      else if (msg.type === "voice") preview = "🎤 Voice message";
       else if (msg.text) preview = msg.text.slice(0, 60);
 
       io.to("user-" + msg.to).emit("message-notification", { from: msg.from, preview });
     }
+  });
+
+  socket.on("toggle-reaction", ({ room, messageId, user, emoji }) => {
+    const existing = db.prepare("SELECT emoji FROM reactions WHERE message_id = ? AND user_name = ?").get(messageId, user);
+
+    if (existing && existing.emoji === emoji) {
+      db.prepare("DELETE FROM reactions WHERE message_id = ? AND user_name = ?").run(messageId, user);
+    } else {
+      db.prepare(
+        "INSERT INTO reactions (message_id, user_name, emoji) VALUES (?, ?, ?) ON CONFLICT(message_id, user_name) DO UPDATE SET emoji = excluded.emoji"
+      ).run(messageId, user, emoji);
+    }
+
+    const rows = db.prepare("SELECT user_name FROM reactions WHERE message_id = ? AND emoji = ?").all(messageId, emoji);
+    io.to(room).emit("reaction-updated", { messageId, emoji, users: rows.map((r) => r.user_name) });
+
+    // If the user had a different emoji before, tell clients to clear that old pill too
+    if (existing && existing.emoji !== emoji) {
+      const oldRows = db.prepare("SELECT user_name FROM reactions WHERE message_id = ? AND emoji = ?").all(messageId, existing.emoji);
+      io.to(room).emit("reaction-updated", { messageId, emoji: existing.emoji, users: oldRows.map((r) => r.user_name) });
+    }
+  });
+
+  socket.on("typing", ({ room, from }) => {
+    socket.to(room).emit("typing", { from });
+  });
+
+  socket.on("stop-typing", ({ room, from }) => {
+    socket.to(room).emit("stop-typing", { from });
+  });
+
+  socket.on("mark-read", ({ room, reader, other }) => {
+    const latest = db.prepare(
+      "SELECT MAX(id) as maxId FROM messages WHERE (from_user = ? AND to_user = ?) OR (from_user = ? AND to_user = ?)"
+    ).get(reader, other, other, reader);
+    const upToId = latest && latest.maxId ? latest.maxId : 0;
+    if (!upToId) return;
+
+    db.prepare(
+      "INSERT INTO read_receipts (reader_name, other_name, last_read_id) VALUES (?, ?, ?) ON CONFLICT(reader_name, other_name) DO UPDATE SET last_read_id = excluded.last_read_id"
+    ).run(reader, other, upToId);
+
+    socket.to(room).emit("read-updated", { upToId });
   });
 
   socket.on("edit-message", ({ room, id, newText }) => {

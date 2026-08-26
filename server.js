@@ -26,6 +26,78 @@ try { db.exec("ALTER TABLE users ADD COLUMN profile_pic TEXT"); } catch (e) {}
 try { db.exec("ALTER TABLE messages ADD COLUMN reply_to_id INTEGER"); } catch (e) {}
 try { db.exec("ALTER TABLE messages ADD COLUMN reply_to_from TEXT"); } catch (e) {}
 try { db.exec("ALTER TABLE messages ADD COLUMN reply_to_preview TEXT"); } catch (e) {}
+try { db.exec("ALTER TABLE users ADD COLUMN zodiac_sign TEXT"); } catch (e) {}
+
+db.exec(`
+  CREATE TABLE IF NOT EXISTS streaks (
+    user_a TEXT,
+    user_b TEXT,
+    streak_count INTEGER DEFAULT 0,
+    last_chat_date TEXT,
+    PRIMARY KEY (user_a, user_b)
+  )
+`);
+
+db.exec(`
+  CREATE TABLE IF NOT EXISTS time_capsules (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    from_user TEXT,
+    to_user TEXT,
+    text TEXT,
+    deliver_at TEXT,
+    delivered INTEGER DEFAULT 0,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+  )
+`);
+
+function streakKey(a, b) {
+  return [a, b].sort();
+}
+
+function bumpStreak(a, b) {
+  const [userA, userB] = streakKey(a, b);
+  const today = new Date().toISOString().slice(0, 10);
+  const row = db.prepare("SELECT * FROM streaks WHERE user_a = ? AND user_b = ?").get(userA, userB);
+
+  if (!row) {
+    db.prepare("INSERT INTO streaks (user_a, user_b, streak_count, last_chat_date) VALUES (?, ?, 1, ?)").run(userA, userB, today);
+    return 1;
+  }
+  if (row.last_chat_date === today) return row.streak_count; // already counted today
+
+  const yesterday = new Date(Date.now() - 86400000).toISOString().slice(0, 10);
+  const newCount = row.last_chat_date === yesterday ? row.streak_count + 1 : 1;
+  db.prepare("UPDATE streaks SET streak_count = ?, last_chat_date = ? WHERE user_a = ? AND user_b = ?").run(newCount, today, userA, userB);
+  return newCount;
+}
+
+function getStreak(a, b) {
+  const [userA, userB] = streakKey(a, b);
+  const row = db.prepare("SELECT * FROM streaks WHERE user_a = ? AND user_b = ?").get(userA, userB);
+  if (!row) return 0;
+  const today = new Date().toISOString().slice(0, 10);
+  const yesterday = new Date(Date.now() - 86400000).toISOString().slice(0, 10);
+  if (row.last_chat_date !== today && row.last_chat_date !== yesterday) return 0; // streak broken
+  return row.streak_count;
+}
+
+// Check for due time capsules every minute and deliver them
+setInterval(() => {
+  const now = new Date().toISOString();
+  const due = db.prepare("SELECT * FROM time_capsules WHERE delivered = 0 AND deliver_at <= ?").all(now);
+  due.forEach((capsule) => {
+    const result = db.prepare(
+      "INSERT INTO messages (from_user, to_user, text, type) VALUES (?, ?, ?, 'text')"
+    ).run(capsule.from_user, capsule.to_user, "⏳ Time Capsule: " + capsule.text);
+
+    const room = [capsule.from_user, capsule.to_user].sort().join("-");
+    const msg = { id: result.lastInsertRowid, room, from: capsule.from_user, to: capsule.to_user, type: "text", text: "⏳ Time Capsule: " + capsule.text };
+    io.to(room).emit("chat message", msg);
+    io.to("user-" + capsule.to_user).emit("message-notification", { from: capsule.from_user, preview: "⏳ A time capsule message arrived!" });
+
+    db.prepare("UPDATE time_capsules SET delivered = 1 WHERE id = ?").run(capsule.id);
+  });
+}, 60000);
 
 db.exec(`
   CREATE TABLE IF NOT EXISTS reactions (
@@ -157,7 +229,8 @@ function renderMessageHTML(m, viewerName, reactionsMap, otherLastReadId) {
   } else if (m.type === "voice") {
     return `<div class="msgRow" data-id="${m.id}">${reply}<b>${m.from_user}:</b><br/><audio controls src="${m.file_data}" style="height:32px; max-width:200px;"></audio>${ticks}${actions}${reactBtn}${reactions}</div>`;
   } else {
-    return `<div class="msgRow" data-id="${m.id}">${reply}<b>${m.from_user}:</b> <span class="msgText">${m.text}</span>${ticks}${actions}${reactBtn}${reactions}</div>`;
+    const translateBtn = `<button class="reactBtn" onclick="translateMsg(${m.id})" title="Translate">🌐</button>`;
+    return `<div class="msgRow" data-id="${m.id}">${reply}<b>${m.from_user}:</b> <span class="msgText">${m.text}</span>${ticks}${actions}${reactBtn}${translateBtn}${reactions}<div class="translationBox" id="translation-${m.id}" style="display:none;"></div></div>`;
   }
 }
 
@@ -218,6 +291,45 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
+  if (req.method === "POST" && parsedUrl.pathname === "/api/schedule-capsule") {
+    try {
+      const body = JSON.parse(await readRequestBody(req));
+      const { from, to, text, deliverAt } = body;
+      if (!from || !to || !text || !deliverAt) throw new Error("Missing required fields");
+
+      db.prepare(
+        "INSERT INTO time_capsules (from_user, to_user, text, deliver_at) VALUES (?, ?, ?, ?)"
+      ).run(from, to, text.slice(0, 1000), deliverAt);
+
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ success: true }));
+    } catch (err) {
+      res.writeHead(500, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: err.message }));
+    }
+    return;
+  }
+
+  if (req.method === "POST" && parsedUrl.pathname === "/api/translate") {
+    try {
+      const body = JSON.parse(await readRequestBody(req));
+      const { text, targetLanguage } = body;
+      if (!text || !targetLanguage) throw new Error("Missing text or target language");
+
+      const reply = await callClaude(
+        [{ role: "user", content: text }],
+        `Translate the user's message into ${targetLanguage}. Reply with ONLY the translation, nothing else - no notes, no explanation, no quotation marks.`
+      );
+
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ translation: reply.trim() }));
+    } catch (err) {
+      res.writeHead(500, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: err.message }));
+    }
+    return;
+  }
+
   if (req.method === "POST" && parsedUrl.pathname === "/api/ai-astrology") {
     try {
       const body = JSON.parse(await readRequestBody(req));
@@ -230,6 +342,23 @@ const server = http.createServer(async (req, res) => {
 
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ reply }));
+    } catch (err) {
+      res.writeHead(500, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: err.message }));
+    }
+    return;
+  }
+
+  if (req.method === "POST" && parsedUrl.pathname === "/api/set-zodiac") {
+    try {
+      const body = JSON.parse(await readRequestBody(req));
+      const { name, zodiacSign } = body;
+      if (!name || !zodiacSign) throw new Error("Missing required fields");
+
+      db.prepare("UPDATE users SET zodiac_sign = ? WHERE name = ?").run(zodiacSign, name);
+
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ success: true }));
     } catch (err) {
       res.writeHead(500, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ error: err.message }));
@@ -445,8 +574,9 @@ const server = http.createServer(async (req, res) => {
       db.prepare("INSERT INTO users (name, gender) VALUES (?, ?) ON CONFLICT(name) DO UPDATE SET gender = excluded.gender").run(name, gender || null);
     }
 
-    const myUserRow = db.prepare("SELECT profile_pic FROM users WHERE name = ?").get(name) || {};
+    const myUserRow = db.prepare("SELECT profile_pic, zodiac_sign FROM users WHERE name = ?").get(name) || {};
     const myProfilePic = myUserRow.profile_pic || "";
+    const myZodiacSign = myUserRow.zodiac_sign || "";
 
     const allUsers = db.prepare("SELECT name, gender, profile_pic FROM users").all();
     const buddyListHTML = allUsers
@@ -560,6 +690,27 @@ const server = http.createServer(async (req, res) => {
             <p>What would you like to do?</p>
           </div>
 
+          <div class="section" id="horoscopeSection">
+            ${myZodiacSign ? `
+            <div id="dailyHoroscopeCard" style="display:none; background:rgba(255,255,255,0.08); border:1px solid rgba(255,255,255,0.18); border-radius:14px; padding:14px; margin-bottom:6px;">
+              <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
+                <span style="font-weight:700; font-size:13px;">🔮 Today's Horoscope (${myZodiacSign})</span>
+                <span onclick="dismissHoroscope()" style="cursor:pointer; color:rgba(255,255,255,0.6); font-size:16px;">&times;</span>
+              </div>
+              <p id="dailyHoroscopeText" style="font-size:12.5px; color:rgba(255,255,255,0.85); margin:0;">Loading...</p>
+            </div>` : `
+            <div style="background:rgba(255,255,255,0.06); border:1px solid rgba(255,255,255,0.15); border-radius:14px; padding:12px; text-align:center; font-size:12.5px;">
+              🔮 Set your zodiac sign to get a daily horoscope card:
+              <select id="zodiacQuickSet" style="margin-top:8px; padding:6px; border-radius:8px; width:100%;">
+                <option value="">Choose sign...</option>
+                <option>Aries</option><option>Taurus</option><option>Gemini</option><option>Cancer</option>
+                <option>Leo</option><option>Virgo</option><option>Libra</option><option>Scorpio</option>
+                <option>Sagittarius</option><option>Capricorn</option><option>Aquarius</option><option>Pisces</option>
+              </select>
+              <button onclick="saveZodiacQuick()" style="margin-top:8px; padding:8px 16px; border:none; border-radius:8px; background:#ffd966; color:#3d0f6e; font-weight:700; cursor:pointer;">Save</button>
+            </div>`}
+          </div>
+
           <div class="section">
             <p class="sectionTitle">Quick Access</p>
             <div class="featureGrid">
@@ -621,6 +772,64 @@ const server = http.createServer(async (req, res) => {
           <script src="/socket.io/socket.io.js"></script>
           <script>
             const myName = "${name}";
+            const myZodiac = "${myZodiacSign}";
+
+            async function saveZodiacQuick() {
+              const sign = document.getElementById("zodiacQuickSet").value;
+              if (!sign) return;
+              try {
+                await fetch("/api/set-zodiac", {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({ name: myName, zodiacSign: sign })
+                });
+                window.location.reload();
+              } catch (err) {
+                alert("Could not save your zodiac sign.");
+              }
+            }
+
+            function dismissHoroscope() {
+              document.getElementById("dailyHoroscopeCard").style.display = "none";
+              localStorage.setItem("horoscopeDismissed_" + myName, new Date().toISOString().slice(0, 10));
+            }
+
+            async function loadDailyHoroscopeIfNeeded() {
+              if (!myZodiac) return;
+              const today = new Date().toISOString().slice(0, 10);
+              const lastShown = localStorage.getItem("horoscopeShownDate_" + myName);
+              const dismissed = localStorage.getItem("horoscopeDismissed_" + myName);
+              if (dismissed === today) return; // already dismissed today
+
+              const card = document.getElementById("dailyHoroscopeCard");
+              if (!card) return;
+              card.style.display = "block";
+
+              if (lastShown === today) {
+                const cached = localStorage.getItem("horoscopeText_" + myName);
+                if (cached) {
+                  document.getElementById("dailyHoroscopeText").textContent = cached;
+                  return;
+                }
+              }
+
+              try {
+                const res = await fetch("/api/ai-astrology", {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({ zodiacSign: myZodiac })
+                });
+                const data = await res.json();
+                const text = data.error ? "Could not load your horoscope right now." : data.reply;
+                document.getElementById("dailyHoroscopeText").textContent = text;
+                localStorage.setItem("horoscopeShownDate_" + myName, today);
+                localStorage.setItem("horoscopeText_" + myName, text);
+              } catch (err) {
+                document.getElementById("dailyHoroscopeText").textContent = "Could not load your horoscope right now.";
+              }
+            }
+
+            loadDailyHoroscopeIfNeeded();
 
             function uploadProfilePic() {
               const input = document.getElementById("profilePicInput");
@@ -2539,6 +2748,7 @@ const server = http.createServer(async (req, res) => {
   } else if (parsedUrl.pathname === "/chat") {
     const me = parsedUrl.query.me;
     const withBuddy = parsedUrl.query.with;
+    const currentStreak = getStreak(me, withBuddy);
 
     if (isBlockedEitherWay(me, withBuddy)) {
       res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
@@ -2669,6 +2879,7 @@ const server = http.createServer(async (req, res) => {
             .reactionsBar { margin-top:3px; display:flex; gap:4px; flex-wrap:wrap; }
             .reactionPill { font-size:11px; background:rgba(0,0,0,0.07); border-radius:10px; padding:1px 7px; cursor:pointer; }
             .replyPreview { font-size:11px; background:rgba(0,0,0,0.06); border-left:3px solid #9333ea; padding:3px 8px; margin-bottom:3px; border-radius:4px; color:#555; }
+            .translationBox { font-size:11.5px; background:rgba(147,51,234,0.08); border-left:3px solid #9333ea; padding:4px 8px; margin-top:4px; border-radius:4px; color:#5a2d8a; font-style:italic; }
             .msgTicks { font-size:11px; margin-left:5px; }
 
             #reactPicker { display:none; position:fixed; background:white; border-radius:10px; padding:6px; box-shadow:0 4px 14px rgba(0,0,0,0.3); z-index:1200; gap:4px; }
@@ -2710,13 +2921,28 @@ const server = http.createServer(async (req, res) => {
             <a class="backBtn" href="/welcome?name=${me}">&larr;</a>
             <span class="chatHeaderAvatar">${withBuddy.charAt(0).toUpperCase()}</span>
             <span class="chatHeaderName">${withBuddy}</span>
+            <span id="streakBadge" style="font-size:12px; color:#ffd966;">${currentStreak > 0 ? "🔥" + currentStreak : ""}</span>
             <button class="callBtnTop" onclick="buzz()" title="Buzz" style="background:rgba(255,217,102,0.2);">🔔</button>
             <button class="callBtnTop" onclick="startCall('audio')">📞</button>
             <button class="callBtnTop" onclick="startCall('video')">📹</button>
             <button class="menuBtn" onclick="toggleMenu()">⋮</button>
             <div class="menuDropdown" id="menuDropdown">
+              <button onclick="openTimeCapsule()">⏳ Send Time Capsule</button>
               <button onclick="reportUser()">⚠️ Report ${withBuddy}</button>
               <button class="danger" onclick="blockUser()">🚫 Block ${withBuddy}</button>
+            </div>
+          </div>
+
+          <div id="timeCapsuleModal" style="display:none; position:fixed; top:0; left:0; right:0; bottom:0; background:rgba(0,0,0,0.6); z-index:1300; align-items:center; justify-content:center;">
+            <div style="background:white; color:#333; border-radius:14px; padding:20px; max-width:320px; width:90%;">
+              <h3 style="margin:0 0 10px;">⏳ Time Capsule</h3>
+              <p style="font-size:12.5px; color:#666; margin:0 0 12px;">Write a message that will be delivered to ${withBuddy} at a future date/time.</p>
+              <textarea id="capsuleText" rows="3" style="width:100%; padding:8px; border-radius:8px; border:1px solid #ccc; font-size:13px; margin-bottom:10px;" placeholder="Your message..."></textarea>
+              <input type="datetime-local" id="capsuleDate" style="width:100%; padding:8px; border-radius:8px; border:1px solid #ccc; font-size:13px; margin-bottom:12px;" />
+              <div style="display:flex; gap:8px;">
+                <button onclick="sendTimeCapsule()" style="flex:1; padding:10px; border:none; border-radius:8px; background:#9333ea; color:white; font-weight:700; cursor:pointer;">Schedule</button>
+                <button onclick="closeTimeCapsule()" style="flex:1; padding:10px; border:none; border-radius:8px; background:#eee; cursor:pointer;">Cancel</button>
+              </div>
             </div>
           </div>
 
@@ -2730,7 +2956,14 @@ const server = http.createServer(async (req, res) => {
               <button id="muteBtn" class="callBtn" onclick="toggleMute()">Mute</button>
               <button id="camBtn" class="callBtn" onclick="toggleCamera()">Camera Off</button>
               <button id="switchCamBtn" class="callBtn" onclick="switchCamera()">Switch Cam</button>
+              <button class="callBtn" onclick="toggleVoiceFilterPicker()" style="background:#444;">🎭 Voice</button>
               <button id="hangUpBtn" class="callBtn" onclick="hangUp(true)">Hang Up</button>
+            </div>
+            <div id="voiceFilterPicker" style="display:none; position:absolute; bottom:90px; left:50%; transform:translateX(-50%); background:rgba(0,0,0,0.7); border-radius:12px; padding:8px; display:none; gap:6px;">
+              <button onclick="applyVoiceFilter('normal')" style="padding:8px 12px; border:none; border-radius:10px; background:#333; color:white; font-size:12px;">Normal</button>
+              <button onclick="applyVoiceFilter('robot')" style="padding:8px 12px; border:none; border-radius:10px; background:#333; color:white; font-size:12px;">🤖 Robot</button>
+              <button onclick="applyVoiceFilter('deep')" style="padding:8px 12px; border:none; border-radius:10px; background:#333; color:white; font-size:12px;">🎙️ Deep</button>
+              <button onclick="applyVoiceFilter('echo')" style="padding:8px 12px; border:none; border-radius:10px; background:#333; color:white; font-size:12px;">🏔️ Echo</button>
             </div>
           </div>
 
@@ -2783,6 +3016,11 @@ const server = http.createServer(async (req, res) => {
 
             socket.emit("join", { room });
             socket.emit("register-user", { name: me });
+
+            socket.on("streak-updated", ({ streak }) => {
+              const badge = document.getElementById("streakBadge");
+              badge.textContent = streak > 0 ? "🔥" + streak : "";
+            });
 
             if ("Notification" in window && Notification.permission === "default") {
               Notification.requestPermission();
@@ -2858,7 +3096,7 @@ const server = http.createServer(async (req, res) => {
               } else if (msg.type === "voice") {
                 html = '<div class="msgRow" data-id="' + msg.id + '">' + reply + '<b>' + msg.from + ':</b><br/><audio controls src="' + msg.fileData + '" style="height:32px; max-width:200px;"></audio>' + ticks + actions + reactBtn + '</div>';
               } else {
-                html = '<div class="msgRow" data-id="' + msg.id + '">' + reply + '<b>' + msg.from + ':</b> <span class="msgText">' + msg.text + '</span>' + ticks + actions + reactBtn + '</div>';
+                html = '<div class="msgRow" data-id="' + msg.id + '">' + reply + '<b>' + msg.from + ':</b> <span class="msgText">' + msg.text + '</span>' + ticks + actions + reactBtn + '<button class="reactBtn" onclick="translateMsg(' + msg.id + ')" title="Translate">🌐</button>' + '<div class="translationBox" id="translation-' + msg.id + '" style="display:none;"></div></div>';
               }
               box.insertAdjacentHTML("beforeend", html);
               box.scrollTop = box.scrollHeight;
@@ -2907,6 +3145,37 @@ const server = http.createServer(async (req, res) => {
 
             function toggleReaction(id, emoji) {
               socket.emit("toggle-reaction", { room, messageId: id, user: me, emoji });
+            }
+
+            // ---- AI Translation ----
+            async function translateMsg(id) {
+              const row = document.querySelector('.msgRow[data-id="' + id + '"]');
+              const textSpan = row ? row.querySelector(".msgText") : null;
+              const box = document.getElementById("translation-" + id);
+              if (!textSpan || !box) return;
+
+              if (box.style.display === "block") {
+                box.style.display = "none";
+                return;
+              }
+
+              const targetLanguage = prompt("Translate to which language? (e.g. English, Assamese, Hindi)", "English");
+              if (!targetLanguage) return;
+
+              box.style.display = "block";
+              box.textContent = "Translating...";
+
+              try {
+                const res = await fetch("/api/translate", {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({ text: textSpan.textContent, targetLanguage })
+                });
+                const data = await res.json();
+                box.textContent = data.error ? ("Error: " + data.error) : ("🌐 " + data.translation);
+              } catch (err) {
+                box.textContent = "Translation failed.";
+              }
             }
 
             document.addEventListener("click", (e) => {
@@ -3163,6 +3432,49 @@ const server = http.createServer(async (req, res) => {
               );
               if (!confirmed) return;
               window.location.href = "/block-user?blocker=" + encodeURIComponent(me) + "&blocked=" + encodeURIComponent(withBuddy);
+            }
+
+            // ---- Time Capsule ----
+            function openTimeCapsule() {
+              toggleMenu();
+              document.getElementById("timeCapsuleModal").style.display = "flex";
+            }
+
+            function closeTimeCapsule() {
+              document.getElementById("timeCapsuleModal").style.display = "none";
+              document.getElementById("capsuleText").value = "";
+              document.getElementById("capsuleDate").value = "";
+            }
+
+            async function sendTimeCapsule() {
+              const text = document.getElementById("capsuleText").value.trim();
+              const dateVal = document.getElementById("capsuleDate").value;
+              if (!text || !dateVal) {
+                alert("Please write a message and pick a delivery date/time.");
+                return;
+              }
+              const deliverAt = new Date(dateVal).toISOString();
+              if (new Date(deliverAt) <= new Date()) {
+                alert("Please pick a time in the future.");
+                return;
+              }
+
+              try {
+                const res = await fetch("/api/schedule-capsule", {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({ from: me, to: withBuddy, text, deliverAt })
+                });
+                const data = await res.json();
+                if (data.error) {
+                  alert("Error: " + data.error);
+                } else {
+                  alert("⏳ Time capsule scheduled! It'll be delivered to " + withBuddy + " at the chosen time.");
+                  closeTimeCapsule();
+                }
+              } catch (err) {
+                alert("Could not schedule the time capsule.");
+              }
             }
 
             // ---- Buzz (grab attention) ----
@@ -3463,9 +3775,75 @@ const server = http.createServer(async (req, res) => {
               }
             }
 
+            // ---- Voice Filters (real-time audio effects on outgoing call audio) ----
+            let voiceFilterCtx = null;
+
+            function toggleVoiceFilterPicker() {
+              const picker = document.getElementById("voiceFilterPicker");
+              picker.style.display = picker.style.display === "flex" ? "none" : "flex";
+            }
+
+            function applyVoiceFilter(type) {
+              if (!localStream || !peerConnection) return;
+              const audioTrack = localStream.getAudioTracks()[0];
+              if (!audioTrack) return;
+
+              if (voiceFilterCtx) {
+                voiceFilterCtx.close();
+                voiceFilterCtx = null;
+              }
+
+              const sender = peerConnection.getSenders().find((s) => s.track && s.track.kind === "audio");
+
+              if (type === "normal") {
+                if (sender) sender.replaceTrack(audioTrack);
+                document.getElementById("voiceFilterPicker").style.display = "none";
+                return;
+              }
+
+              voiceFilterCtx = new (window.AudioContext || window.webkitAudioContext)();
+              const source = voiceFilterCtx.createMediaStreamSource(new MediaStream([audioTrack]));
+              const dest = voiceFilterCtx.createMediaStreamDestination();
+
+              if (type === "robot") {
+                const carrier = voiceFilterCtx.createOscillator();
+                carrier.frequency.value = 50;
+                const ringGain = voiceFilterCtx.createGain();
+                ringGain.gain.value = 0;
+                carrier.connect(ringGain.gain);
+                carrier.start();
+                source.connect(ringGain);
+                ringGain.connect(dest);
+              } else if (type === "deep") {
+                const filter = voiceFilterCtx.createBiquadFilter();
+                filter.type = "lowpass";
+                filter.frequency.value = 700;
+                source.connect(filter);
+                filter.connect(dest);
+              } else if (type === "echo") {
+                const delay = voiceFilterCtx.createDelay();
+                delay.delayTime.value = 0.28;
+                const feedback = voiceFilterCtx.createGain();
+                feedback.gain.value = 0.35;
+                source.connect(dest);
+                source.connect(delay);
+                delay.connect(feedback);
+                feedback.connect(delay);
+                delay.connect(dest);
+              }
+
+              const newTrack = dest.stream.getAudioTracks()[0];
+              if (sender) sender.replaceTrack(newTrack);
+              document.getElementById("voiceFilterPicker").style.display = "none";
+            }
+
             function hangUp(notifyOther) {
               stopRingtone();
               isCallingOut = false;
+              if (voiceFilterCtx) {
+                voiceFilterCtx.close();
+                voiceFilterCtx = null;
+              }
               if (peerConnection) {
                 peerConnection.close();
                 peerConnection = null;
@@ -3478,6 +3856,7 @@ const server = http.createServer(async (req, res) => {
               document.getElementById("bigVideo").srcObject = null;
               document.getElementById("smallVideo").srcObject = null;
               document.getElementById("incomingCall").style.display = "none";
+              document.getElementById("voiceFilterPicker").style.display = "none";
               muted = false;
               camOff = false;
               document.getElementById("muteBtn").textContent = "Mute";
@@ -3933,6 +4312,12 @@ io.on("connection", (socket) => {
     );
     msg.id = result.lastInsertRowid;
     io.to(msg.room).emit("chat message", msg);
+
+    // Update friendship streak and let both people know the new count
+    if (msg.to) {
+      const newStreak = bumpStreak(msg.from, msg.to);
+      io.to(msg.room).emit("streak-updated", { streak: newStreak });
+    }
 
     // Notify the recipient wherever they currently are in the app
     if (msg.to) {

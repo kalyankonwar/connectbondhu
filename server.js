@@ -2297,6 +2297,7 @@ const server = http.createServer(async (req, res) => {
               if (!text) return;
               socket.emit("group-chat-message", { room, from: me, type: "text", text });
               input.value = "";
+              document.getElementById("emojiPicker").style.display = "none";
             }
 
             document.getElementById("groupChatInput").addEventListener("keydown", (e) => {
@@ -2341,7 +2342,15 @@ const server = http.createServer(async (req, res) => {
               const input = document.getElementById("groupChatInput");
               input.value += emoji;
               input.focus();
+              document.getElementById("emojiPicker").style.display = "none";
             }
+
+            document.addEventListener("click", (e) => {
+              const picker = document.getElementById("emojiPicker");
+              if (picker && picker.style.display === "grid" && !e.target.closest("#emojiPicker") && !e.target.closest("#chatInputRow button")) {
+                picker.style.display = "none";
+              }
+            });
 
             // ---- Private calls ----
             let privatePeers = {};
@@ -3025,6 +3034,7 @@ const server = http.createServer(async (req, res) => {
               textBox.value = "";
               cancelReply();
               socket.emit("stop-typing", { room, from: me });
+              document.getElementById("dmEmojiPicker").style.display = "none";
             }
 
             // ---- Emoji picker for 1-on-1 chat ----
@@ -3046,7 +3056,15 @@ const server = http.createServer(async (req, res) => {
               const textBox = document.getElementById("text");
               textBox.value += emoji;
               textBox.focus();
+              document.getElementById("dmEmojiPicker").style.display = "none";
             }
+
+            document.addEventListener("click", (e) => {
+              const picker = document.getElementById("dmEmojiPicker");
+              if (picker && picker.style.display === "grid" && !e.target.closest("#dmEmojiPicker") && !e.target.closest("#attachBar button")) {
+                picker.style.display = "none";
+              }
+            });
 
             function sendFile(inputId) {
               const input = document.getElementById(inputId);
@@ -3230,12 +3248,16 @@ const server = http.createServer(async (req, res) => {
             let callMode = "video"; // "video" or "audio"
 
             async function getLocalStream(mode) {
-              if (!localStream) {
-                localStream = await navigator.mediaDevices.getUserMedia({
-                  video: mode !== "audio",
-                  audio: true
-                });
+              // Always get a fresh stream matching what THIS call needs (audio-only vs video),
+              // instead of reusing a stream left over from a previous call of a different mode.
+              if (localStream) {
+                localStream.getTracks().forEach((t) => t.stop());
+                localStream = null;
               }
+              localStream = await navigator.mediaDevices.getUserMedia({
+                video: mode !== "audio",
+                audio: true
+              });
               return localStream;
             }
 

@@ -50,6 +50,16 @@ db.exec(`
   )
 `);
 
+db.exec(`
+  CREATE TABLE IF NOT EXISTS statuses (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_name TEXT,
+    type TEXT,
+    content TEXT,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+  )
+`);
+
 function streakKey(a, b) {
   return [a, b].sort();
 }
@@ -342,6 +352,24 @@ const server = http.createServer(async (req, res) => {
 
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ reply }));
+    } catch (err) {
+      res.writeHead(500, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: err.message }));
+    }
+    return;
+  }
+
+  if (req.method === "POST" && parsedUrl.pathname === "/api/post-status") {
+    try {
+      const body = JSON.parse(await readRequestBody(req));
+      const { name, type, content } = body;
+      if (!name || !type || !content) throw new Error("Missing required fields");
+      if (content.length > 3 * 1024 * 1024) throw new Error("Status content too large");
+
+      db.prepare("INSERT INTO statuses (user_name, type, content) VALUES (?, ?, ?)").run(name, type, content);
+
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ success: true }));
     } catch (err) {
       res.writeHead(500, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ error: err.message }));
@@ -714,6 +742,9 @@ const server = http.createServer(async (req, res) => {
           <div class="section">
             <p class="sectionTitle">Quick Access</p>
             <div class="featureGrid">
+              <a class="featureCard" href="/status?me=${name}">
+                <span class="icon">📸</span><span class="label">Status</span>
+              </a>
               <a class="featureCard" href="/camera-test?name=${name}">
                 <span class="icon">🎥</span><span class="label">Test Camera & Mic</span>
               </a>
@@ -1273,6 +1304,207 @@ const server = http.createServer(async (req, res) => {
       </html>
     `);
 
+  } else if (parsedUrl.pathname === "/status") {
+    const me = parsedUrl.query.me || "Guest";
+
+    const myStatuses = db.prepare(
+      "SELECT * FROM statuses WHERE user_name = ? AND created_at > datetime('now','-1 day') ORDER BY created_at DESC"
+    ).all(me);
+
+    const allRecent = db.prepare(
+      "SELECT * FROM statuses WHERE created_at > datetime('now','-1 day') ORDER BY created_at DESC"
+    ).all();
+
+    const buddyStatusMap = {};
+    allRecent.forEach((s) => {
+      if (s.user_name === me) return;
+      if (isBlockedEitherWay(me, s.user_name)) return;
+      if (!buddyStatusMap[s.user_name]) buddyStatusMap[s.user_name] = [];
+      buddyStatusMap[s.user_name].push(s);
+    });
+
+    const buddyRowsHTML = Object.keys(buddyStatusMap).length
+      ? Object.entries(buddyStatusMap)
+          .map(
+            ([user, statuses]) => `
+        <div class="statusRow" onclick='openStatusViewer(${JSON.stringify(user)})'>
+          <span class="statusRingAvatar">${user.charAt(0).toUpperCase()}</span>
+          <span>
+            <div style="font-weight:600; font-size:13.5px;">${user}</div>
+            <div style="font-size:11px; color:rgba(255,255,255,0.55);">${statuses.length} update${statuses.length > 1 ? "s" : ""}</div>
+          </span>
+        </div>`
+          )
+          .join("")
+      : `<div style="padding:16px; text-align:center; font-size:12.5px; color:rgba(255,255,255,0.5);">No updates from buddies in the last 24 hours.</div>`;
+
+    res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+    res.end(`
+      <html>
+        <head>
+          <meta name="viewport" content="width=device-width, initial-scale=1" />
+          <style>
+            * { box-sizing: border-box; }
+            body { margin:0; min-height:100vh; background:linear-gradient(160deg,#3d0f6e,#9333ea); color:white; font-family:-apple-system, Segoe UI, Roboto, sans-serif; padding-bottom:30px; }
+            .header { padding:20px; text-align:center; position:relative; }
+            .header a.backLink { position:absolute; top:20px; left:16px; color:#ffd966; text-decoration:none; font-size:20px; }
+            .header h1 { margin:6px 0 2px; font-size:20px; }
+            .section { max-width:440px; margin:0 auto 16px; padding:0 16px; }
+            .sectionTitle { font-size:12px; text-transform:uppercase; letter-spacing:0.8px; color:rgba(255,255,255,0.6); margin:0 0 8px 4px; }
+
+            .myStatusCard { background:rgba(255,255,255,0.07); border:1px solid rgba(255,255,255,0.15); border-radius:14px; padding:14px; display:flex; align-items:center; gap:12px; cursor:pointer; }
+            .statusRingAvatar {
+              width:44px; height:44px; border-radius:50%; flex-shrink:0;
+              background:linear-gradient(135deg,#ffd966,#ff9d3d); color:#3d0f6e; font-weight:700;
+              display:flex; align-items:center; justify-content:center; font-size:16px;
+              border:2px solid #ffd966;
+            }
+            .statusRow { background:rgba(255,255,255,0.06); border:1px solid rgba(255,255,255,0.14); border-radius:12px; padding:10px 12px; display:flex; align-items:center; gap:12px; margin-bottom:8px; cursor:pointer; }
+
+            #addStatusModal, #statusViewer { display:none; position:fixed; top:0; left:0; right:0; bottom:0; z-index:2000; align-items:center; justify-content:center; }
+            #addStatusModal { background:rgba(0,0,0,0.6); }
+            #addStatusModal .box { background:white; color:#333; border-radius:14px; padding:20px; max-width:320px; width:90%; }
+            #addStatusModal textarea { width:100%; padding:8px; border-radius:8px; border:1px solid #ccc; font-size:13px; margin-bottom:10px; }
+            #statusViewer { background:#000; flex-direction:column; }
+            #statusViewerContent { flex:1; display:flex; align-items:center; justify-content:center; width:100%; padding:20px; text-align:center; }
+            #statusViewerContent img { max-width:100%; max-height:80vh; border-radius:8px; }
+            #statusViewerText { font-size:20px; font-weight:600; padding:30px; background:linear-gradient(135deg,#3d0f6e,#9333ea); border-radius:14px; }
+            .statusViewerBar { display:flex; justify-content:space-between; align-items:center; padding:14px; color:white; }
+            .statusNav { position:absolute; top:0; bottom:0; width:33%; }
+          </style>
+        </head>
+        <body>
+          <div class="header">
+            <a class="backLink" href="/welcome?name=${me}">&larr;</a>
+            <h1>📸 Status</h1>
+          </div>
+
+          <div class="section">
+            <div class="myStatusCard" onclick="${myStatuses.length ? `openStatusViewer(${JSON.stringify(me)})` : "openAddStatus()"}">
+              <span class="statusRingAvatar">${me.charAt(0).toUpperCase()}</span>
+              <span style="flex:1;">
+                <div style="font-weight:600; font-size:14px;">My Status</div>
+                <div style="font-size:11.5px; color:rgba(255,255,255,0.6);">${myStatuses.length ? myStatuses.length + " update(s) in the last 24h \u2014 tap to view" : "Tap to post your first status"}</div>
+              </span>
+              <button onclick="event.stopPropagation(); openAddStatus();" style="padding:8px 12px; border:none; border-radius:16px; background:#ffd966; color:#3d0f6e; font-weight:700; cursor:pointer;">+ Add</button>
+            </div>
+          </div>
+
+          <div class="section">
+            <p class="sectionTitle">Buddy Updates</p>
+            ${buddyRowsHTML}
+          </div>
+
+          <div id="addStatusModal">
+            <div class="box">
+              <h3 style="margin:0 0 10px;">Post a Status</h3>
+              <textarea id="statusTextInput" rows="3" placeholder="What's on your mind?"></textarea>
+              <input type="file" id="statusImageInput" accept="image/*" style="margin-bottom:10px;" />
+              <div style="display:flex; gap:8px;">
+                <button onclick="postStatus()" style="flex:1; padding:10px; border:none; border-radius:8px; background:#9333ea; color:white; font-weight:700; cursor:pointer;">Post</button>
+                <button onclick="closeAddStatus()" style="flex:1; padding:10px; border:none; border-radius:8px; background:#eee; cursor:pointer;">Cancel</button>
+              </div>
+            </div>
+          </div>
+
+          <div id="statusViewer">
+            <div class="statusViewerBar">
+              <span id="statusViewerName" style="font-weight:600;"></span>
+              <span onclick="closeStatusViewer()" style="cursor:pointer; font-size:22px;">&times;</span>
+            </div>
+            <div id="statusViewerContent" style="position:relative;">
+              <div class="statusNav" style="left:0;" onclick="prevStatus()"></div>
+              <div class="statusNav" style="right:0;" onclick="nextStatus()"></div>
+              <div id="statusViewerInner"></div>
+            </div>
+          </div>
+
+          <script>
+            const myName = "${me}";
+            const allBuddyStatuses = ${JSON.stringify(buddyStatusMap)};
+            const myStatusesData = ${JSON.stringify(myStatuses)};
+
+            function openAddStatus() {
+              document.getElementById("addStatusModal").style.display = "flex";
+            }
+            function closeAddStatus() {
+              document.getElementById("addStatusModal").style.display = "none";
+              document.getElementById("statusTextInput").value = "";
+              document.getElementById("statusImageInput").value = "";
+            }
+
+            async function postStatus() {
+              const text = document.getElementById("statusTextInput").value.trim();
+              const fileInput = document.getElementById("statusImageInput");
+              const file = fileInput.files[0];
+
+              if (file) {
+                if (file.size > 3 * 1024 * 1024) { alert("Please choose an image under 3MB."); return; }
+                const reader = new FileReader();
+                reader.onload = async () => {
+                  await submitStatus("image", reader.result);
+                };
+                reader.readAsDataURL(file);
+              } else if (text) {
+                await submitStatus("text", text);
+              } else {
+                alert("Write something or choose a photo first.");
+              }
+            }
+
+            async function submitStatus(type, content) {
+              try {
+                const res = await fetch("/api/post-status", {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({ name: myName, type, content })
+                });
+                const data = await res.json();
+                if (data.error) { alert("Error: " + data.error); return; }
+                closeAddStatus();
+                window.location.reload();
+              } catch (err) {
+                alert("Could not post status.");
+              }
+            }
+
+            let viewerStatuses = [];
+            let viewerIndex = 0;
+
+            function openStatusViewer(user) {
+              viewerStatuses = user === myName ? myStatusesData : (allBuddyStatuses[user] || []);
+              if (!viewerStatuses.length) return;
+              viewerIndex = 0;
+              document.getElementById("statusViewerName").textContent = user;
+              document.getElementById("statusViewer").style.display = "flex";
+              renderViewerFrame();
+            }
+
+            function renderViewerFrame() {
+              const s = viewerStatuses[viewerIndex];
+              const inner = document.getElementById("statusViewerInner");
+              if (s.type === "image") {
+                inner.innerHTML = '<img src="' + s.content + '" />';
+              } else {
+                inner.innerHTML = '<div id="statusViewerText">' + s.content + '</div>';
+              }
+            }
+
+            function nextStatus() {
+              if (viewerIndex < viewerStatuses.length - 1) { viewerIndex++; renderViewerFrame(); }
+              else closeStatusViewer();
+            }
+            function prevStatus() {
+              if (viewerIndex > 0) { viewerIndex--; renderViewerFrame(); }
+            }
+            function closeStatusViewer() {
+              document.getElementById("statusViewer").style.display = "none";
+            }
+          </script>
+        </body>
+      </html>
+    `);
+
   } else if (parsedUrl.pathname === "/rooms") {
     const me = parsedUrl.query.me || "Guest";
     const genderParam = parsedUrl.query.gender || "";
@@ -1448,6 +1680,9 @@ const server = http.createServer(async (req, res) => {
     const me = parsedUrl.query.me || "Guest";
     const genderQ = parsedUrl.query.gender || "";
     const room = parsedUrl.query.room || "family-room";
+
+    const customRoomRow = db.prepare("SELECT created_by FROM custom_rooms WHERE room_id = ?").get(room);
+    const roomOwner = customRoomRow ? customRoomRow.created_by : "";
 
     res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
     res.end(`
@@ -1727,6 +1962,14 @@ const server = http.createServer(async (req, res) => {
           </style>
         </head>
         <body>
+          <div id="joinWaitingOverlay" style="display:none; position:fixed; top:0; left:0; right:0; bottom:0; background:rgba(10,3,20,0.97); z-index:2000; align-items:center; justify-content:center; color:white; text-align:center; padding:20px;">
+            <div>
+              <div style="font-size:36px; margin-bottom:10px;">⏳</div>
+              <p style="font-size:16px; font-weight:600;">Waiting for the room creator to let you in...</p>
+              <p style="font-size:12.5px; color:rgba(255,255,255,0.6);">This room is private. You'll be let in once approved.</p>
+            </div>
+          </div>
+
           <div id="topBar">
             <a href="/welcome?name=${me}" style="color:#ffd966; text-decoration:none; font-size:13px; position:absolute; top:16px; left:16px;">&larr; Back</a>
             <h2>👥 ${room}</h2>
@@ -2739,7 +2982,34 @@ const server = http.createServer(async (req, res) => {
               socket.emit("get-group-chat-history", { room });
             }
 
-            startRoom();
+            // ---- Room join approval (only applies to custom, creator-owned rooms) ----
+            const roomOwner = "${roomOwner}";
+            socket.emit("register-user", { name: me });
+
+            if (roomOwner && roomOwner !== me) {
+              document.getElementById("joinWaitingOverlay").style.display = "flex";
+              socket.emit("request-join-room", { room, requesterName: me });
+            } else {
+              startRoom();
+            }
+
+            socket.on("join-approved", () => {
+              document.getElementById("joinWaitingOverlay").style.display = "none";
+              startRoom();
+            });
+
+            socket.on("join-denied", () => {
+              document.getElementById("joinWaitingOverlay").innerHTML =
+                '<div style="text-align:center; padding:20px;"><p style="font-size:15px;">🚫 The room creator did not approve your request.</p><a href="/rooms?me=' + encodeURIComponent(me) + '" style="color:#ffd966;">&larr; Back to Rooms</a></div>';
+            });
+
+            // If I'm the owner, listen for join requests from others (even if I opened this room
+            // from a notification rather than being on this exact page)
+            socket.on("join-request", ({ room: reqRoom, requesterName, requesterSocketId }) => {
+              if (reqRoom !== room) return;
+              const approve = confirm(requesterName + " wants to join your room \\"" + room + "\\". Allow them in?");
+              socket.emit("respond-join-request", { room: reqRoom, requesterSocketId, approved: approve, requesterName });
+            });
           </script>
         </body>
       </html>
@@ -3888,6 +4158,7 @@ const ringingRoomCallers = new Map(); // room -> socket.id of whoever is current
 const activeCallRooms = new Set();
 const groupRoomMembers = {}; // room -> { socketId: {name, gender} }
 const roomRosterMembers = {}; // room -> { socketId: {name, gender} } (lightweight, no video)
+const roomApprovedUsers = {}; // room -> Set of names approved to join a private/custom room
 const groupChatHistory = {}; // room -> [ recent messages ]
 let groupMessageIdCounter = 0;
 const privateRoomMembers = {}; // privateRoomId -> { socketId: name }
@@ -3924,6 +4195,32 @@ io.on("connection", (socket) => {
     if (!name) return;
     socket.join("user-" + name);
     socket.data.registeredName = name;
+  });
+
+  // ---- Private room join approval ----
+  socket.on("request-join-room", ({ room, requesterName }) => {
+    const customRoom = db.prepare("SELECT created_by FROM custom_rooms WHERE room_id = ?").get(room);
+
+    // Not a custom/private room, or requester is the owner, or already approved this session
+    if (!customRoom || customRoom.created_by === requesterName || (roomApprovedUsers[room] && roomApprovedUsers[room].has(requesterName))) {
+      socket.emit("join-approved");
+      return;
+    }
+
+    // Ask the owner, wherever they currently are
+    io.to("user-" + customRoom.created_by).emit("join-request", {
+      room, requesterName, requesterSocketId: socket.id
+    });
+  });
+
+  socket.on("respond-join-request", ({ room, requesterSocketId, approved, requesterName }) => {
+    if (approved) {
+      if (!roomApprovedUsers[room]) roomApprovedUsers[room] = new Set();
+      roomApprovedUsers[room].add(requesterName);
+      io.to(requesterSocketId).emit("join-approved");
+    } else {
+      io.to(requesterSocketId).emit("join-denied");
+    }
   });
 
   // ---- Room roster (chat-first landing, no camera needed) ----

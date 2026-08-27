@@ -238,6 +238,16 @@ function renderMessageHTML(m, viewerName, reactionsMap, otherLastReadId) {
     return `<div class="msgRow" data-id="${m.id}">${reply}<b>${m.from_user}:</b><br/><a href="${m.file_data}" download="${m.file_name}">📎 ${m.file_name}</a>${ticks}${actions}${reactBtn}${reactions}</div>`;
   } else if (m.type === "voice") {
     return `<div class="msgRow" data-id="${m.id}">${reply}<b>${m.from_user}:</b><br/><audio controls src="${m.file_data}" style="height:32px; max-width:200px;"></audio>${ticks}${actions}${reactBtn}${reactions}</div>`;
+  } else if (m.type === "location") {
+    let loc = {};
+    try { loc = JSON.parse(m.file_data); } catch (e) {}
+    const mapId = loc.live ? loc.liveId : "loc-" + m.id;
+    const liveBadge = loc.live ? `<div id="${mapId}-badge" style="font-size:11px; color:#e33; margin-top:2px;">🔴 Live location</div>` : "";
+    return `<div class="msgRow" data-id="${m.id}">${reply}<b>${m.from_user}:</b><br/>
+      <div id="${mapId}" style="width:200px; height:120px; border-radius:8px; margin-top:4px;" onclick="window.open('https://www.google.com/maps?q=${loc.lat},${loc.lng}','_blank')"></div>
+      ${liveBadge}
+      <script>renderLocationMap('${mapId}', ${loc.lat}, ${loc.lng});</script>
+      ${ticks}${actions}${reactBtn}${reactions}</div>`;
   } else {
     const translateBtn = `<button class="reactBtn" onclick="translateMsg(${m.id})" title="Translate">🌐</button>`;
     return `<div class="msgRow" data-id="${m.id}">${reply}<b>${m.from_user}:</b> <span class="msgText">${m.text}</span>${ticks}${actions}${reactBtn}${translateBtn}${reactions}<div class="translationBox" id="translation-${m.id}" style="display:none;"></div></div>`;
@@ -1684,10 +1694,16 @@ const server = http.createServer(async (req, res) => {
     const customRoomRow = db.prepare("SELECT created_by FROM custom_rooms WHERE room_id = ?").get(room);
     const roomOwner = customRoomRow ? customRoomRow.created_by : "";
 
+    const myBuddiesForInvite = db.prepare("SELECT name FROM users WHERE name != ?").all(me)
+      .filter((u) => !isBlockedEitherWay(me, u.name))
+      .map((u) => u.name);
+
     res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
     res.end(`
       <html>
         <head>
+          <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+          <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
           <style>
             * { box-sizing:border-box; }
             body { background:linear-gradient(160deg,#0f0620,#1a0b33); color:white; font-family:-apple-system, Segoe UI, Roboto, sans-serif; margin:0; padding:0; }
@@ -1974,6 +1990,15 @@ const server = http.createServer(async (req, res) => {
             <a href="/welcome?name=${me}" style="color:#ffd966; text-decoration:none; font-size:13px; position:absolute; top:16px; left:16px;">&larr; Back</a>
             <h2>👥 ${room}</h2>
             <p style="margin:4px; font-size:12.5px; color:#ffd966;">Tap a name for a private chat, or chat here with everyone</p>
+            <button id="inviteBtn" onclick="openInvitePicker()" style="display:none; position:absolute; top:16px; right:16px; background:rgba(255,255,255,0.15); border:1px solid rgba(255,255,255,0.3); color:white; padding:6px 12px; border-radius:16px; font-size:12px; cursor:pointer;">➕ Invite</button>
+          </div>
+
+          <div id="invitePickerModal" style="display:none; position:fixed; top:0; left:0; right:0; bottom:0; background:rgba(0,0,0,0.6); z-index:2100; align-items:center; justify-content:center;">
+            <div style="background:white; color:#333; border-radius:14px; padding:18px; max-width:320px; width:90%; max-height:70vh; overflow-y:auto;">
+              <h3 style="margin:0 0 10px;">Invite buddies to this room</h3>
+              <div id="inviteBuddyList"></div>
+              <button onclick="closeInvitePicker()" style="width:100%; margin-top:12px; padding:10px; border:none; border-radius:8px; background:#eee; cursor:pointer;">Close</button>
+            </div>
           </div>
 
           <div id="roster"></div>
@@ -1983,7 +2008,17 @@ const server = http.createServer(async (req, res) => {
           <div id="controls">
             <button onclick="toggleVideoGrid()">🎥 Group Video</button>
             <button onclick="toggleGamePanel()">🎮 Games</button>
+            <button onclick="toggleLiveMap()">🗺️ Live Map</button>
             <button id="leaveBtn" onclick="leaveCall()">🚪 Leave Room</button>
+          </div>
+
+          <div id="liveMapOverlay" style="display:none; position:fixed; top:0; left:0; right:0; bottom:0; background:#000; z-index:1800;">
+            <div style="position:absolute; top:0; left:0; right:0; z-index:1801; background:linear-gradient(135deg,#3d0f6e,#9333ea); padding:12px; display:flex; justify-content:space-between; align-items:center;">
+              <span style="font-weight:600; font-size:14px;">🗺️ Live Room Map</span>
+              <span onclick="toggleLiveMap()" style="cursor:pointer; font-size:20px;">&times;</span>
+            </div>
+            <div id="liveMapDiv" style="width:100%; height:100%;"></div>
+            <button id="shareMyLocationBtn" onclick="toggleShareMyLocation()" style="position:absolute; bottom:20px; left:50%; transform:translateX(-50%); z-index:1801; padding:12px 22px; border:none; border-radius:24px; background:#ffd966; color:#3d0f6e; font-weight:700; cursor:pointer;">📍 Share My Location</button>
           </div>
 
           <div id="videoSubControls" style="display:none; text-align:center; padding-bottom:10px;">
@@ -2982,6 +3017,87 @@ const server = http.createServer(async (req, res) => {
               socket.emit("get-group-chat-history", { room });
             }
 
+            // ---- Live Room Map ----
+            let liveMap = null;
+            let liveMapMarkers = {}; // name -> marker
+            let myLocationWatchId = null;
+            let sharingMyLocation = false;
+
+            function toggleLiveMap() {
+              const overlay = document.getElementById("liveMapOverlay");
+              const isOpen = overlay.style.display === "block";
+              if (isOpen) {
+                overlay.style.display = "none";
+                return;
+              }
+              overlay.style.display = "block";
+
+              if (!liveMap) {
+                liveMap = L.map("liveMapDiv").setView([20.5937, 78.9629], 5); // default India view
+                L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png").addTo(liveMap);
+              }
+              setTimeout(() => liveMap.invalidateSize(), 100);
+            }
+
+            function toggleShareMyLocation() {
+              const btn = document.getElementById("shareMyLocationBtn");
+              if (!sharingMyLocation) {
+                if (!navigator.geolocation) {
+                  alert("Location isn't supported on this device/browser.");
+                  return;
+                }
+                sharingMyLocation = true;
+                btn.textContent = "🛑 Stop Sharing";
+                btn.style.background = "#e33";
+                btn.style.color = "white";
+
+                myLocationWatchId = navigator.geolocation.watchPosition((pos) => {
+                  const lat = pos.coords.latitude, lng = pos.coords.longitude;
+                  socket.emit("group-location-update", { room, name: me, lat, lng });
+                  updateMapMarker(me, lat, lng, true);
+                }, () => {
+                  alert("Could not get your location. Please allow location access.");
+                  toggleShareMyLocation();
+                }, { enableHighAccuracy: true });
+              } else {
+                sharingMyLocation = false;
+                btn.textContent = "📍 Share My Location";
+                btn.style.background = "#ffd966";
+                btn.style.color = "#3d0f6e";
+                if (myLocationWatchId !== null) {
+                  navigator.geolocation.clearWatch(myLocationWatchId);
+                  myLocationWatchId = null;
+                }
+                socket.emit("group-location-stop", { room, name: me });
+                if (liveMapMarkers[me]) {
+                  liveMap.removeLayer(liveMapMarkers[me]);
+                  delete liveMapMarkers[me];
+                }
+              }
+            }
+
+            function updateMapMarker(name, lat, lng, isMe) {
+              if (!liveMap) return;
+              if (liveMapMarkers[name]) {
+                liveMapMarkers[name].setLatLng([lat, lng]);
+              } else {
+                liveMapMarkers[name] = L.marker([lat, lng]).addTo(liveMap)
+                  .bindPopup(isMe ? "You" : name);
+              }
+              if (isMe) liveMap.setView([lat, lng], 15);
+            }
+
+            socket.on("group-location-update", ({ name, lat, lng }) => {
+              updateMapMarker(name, lat, lng, false);
+            });
+
+            socket.on("group-location-stop", ({ name }) => {
+              if (liveMapMarkers[name] && liveMap) {
+                liveMap.removeLayer(liveMapMarkers[name]);
+                delete liveMapMarkers[name];
+              }
+            });
+
             // ---- Room join approval (only applies to custom, creator-owned rooms) ----
             const roomOwner = "${roomOwner}";
             socket.emit("register-user", { name: me });
@@ -2991,7 +3107,44 @@ const server = http.createServer(async (req, res) => {
               socket.emit("request-join-room", { room, requesterName: me });
             } else {
               startRoom();
+              if (roomOwner === me) {
+                document.getElementById("inviteBtn").style.display = "block";
+              }
             }
+
+            // ---- Invite buddies to this room ----
+            const myBuddiesList = ${JSON.stringify(myBuddiesForInvite)};
+
+            function openInvitePicker() {
+              const listEl = document.getElementById("inviteBuddyList");
+              if (!myBuddiesList.length) {
+                listEl.innerHTML = '<p style="font-size:13px; color:#666;">No buddies to invite yet.</p>';
+              } else {
+                listEl.innerHTML = myBuddiesList.map((name) =>
+                  '<div style="display:flex; justify-content:space-between; align-items:center; padding:8px 0; border-bottom:1px solid #eee;">' +
+                  '<span style="font-size:13.5px;">' + name + '</span>' +
+                  '<button onclick="sendRoomInvite(\\'' + name.replace(/'/g, "") + '\\')" style="padding:6px 12px; border:none; border-radius:14px; background:#9333ea; color:white; font-size:12px; cursor:pointer;">Invite</button>' +
+                  '</div>'
+                ).join("");
+              }
+              document.getElementById("invitePickerModal").style.display = "flex";
+            }
+
+            function closeInvitePicker() {
+              document.getElementById("invitePickerModal").style.display = "none";
+            }
+
+            function sendRoomInvite(buddyName) {
+              socket.emit("invite-to-room", { room, from: me, to: buddyName });
+              alert("Invite sent to " + buddyName + "!");
+            }
+
+            socket.on("room-invite-received", ({ room: invitedRoom, from }) => {
+              const accept = confirm(from + " invited you to join their room \\"" + invitedRoom + "\\". Join now?");
+              if (accept) {
+                window.location.href = "/group-call?room=" + encodeURIComponent(invitedRoom) + "&me=" + encodeURIComponent(me) + "&gender=" + encodeURIComponent(myGender);
+              }
+            });
 
             socket.on("join-approved", () => {
               document.getElementById("joinWaitingOverlay").style.display = "none";
@@ -3059,6 +3212,8 @@ const server = http.createServer(async (req, res) => {
     res.end(`
       <html>
         <head>
+          <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+          <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
           <style>
             body {
               margin:0;
@@ -3272,9 +3427,19 @@ const server = http.createServer(async (req, res) => {
             <button onclick="document.getElementById('backCameraInput').click()" style="padding:10px 12px; border:none; border-radius:20px; background:rgba(255,255,255,0.12); color:white; cursor:pointer;">📷 Back</button>
             <button onclick="document.getElementById('frontCameraInput').click()" style="padding:10px 12px; border:none; border-radius:20px; background:rgba(255,255,255,0.12); color:white; cursor:pointer;">🤳 Front</button>
             <button onclick="document.getElementById('fileInput').click()" style="padding:10px 12px; border:none; border-radius:20px; background:rgba(255,255,255,0.12); color:white; cursor:pointer;">📎 File</button>
+            <button onclick="openLocationPicker()" style="padding:10px 12px; border:none; border-radius:20px; background:rgba(255,255,255,0.12); color:white; cursor:pointer;">📍</button>
             <input type="file" id="backCameraInput" accept="image/*" capture="environment" onchange="sendFile('backCameraInput')" style="display:none;" />
             <input type="file" id="frontCameraInput" accept="image/*" capture="user" onchange="sendFile('frontCameraInput')" style="display:none;" />
             <input type="file" id="fileInput" onchange="sendFile('fileInput')" style="display:none;" />
+          </div>
+
+          <div id="locationPickerModal" style="display:none; position:fixed; top:0; left:0; right:0; bottom:0; background:rgba(0,0,0,0.6); z-index:1400; align-items:center; justify-content:center;">
+            <div style="background:white; color:#333; border-radius:14px; padding:20px; max-width:300px; width:90%; text-align:center;">
+              <h3 style="margin:0 0 14px;">📍 Share Location</h3>
+              <button onclick="shareLocation(false)" style="width:100%; padding:11px; margin-bottom:8px; border:none; border-radius:8px; background:#9333ea; color:white; font-weight:700; cursor:pointer;">Share Current Location</button>
+              <button onclick="shareLocation(true)" style="width:100%; padding:11px; margin-bottom:8px; border:none; border-radius:8px; background:#e33; color:white; font-weight:700; cursor:pointer;">🔴 Share Live Location (15 min)</button>
+              <button onclick="closeLocationPicker()" style="width:100%; padding:11px; border:none; border-radius:8px; background:#eee; cursor:pointer;">Cancel</button>
+            </div>
           </div>
 
           <script src="/socket.io/socket.io.js"></script>
@@ -3365,6 +3530,18 @@ const server = http.createServer(async (req, res) => {
                 html = '<div class="msgRow" data-id="' + msg.id + '">' + reply + '<b>' + msg.from + ':</b><br/><a href="' + msg.fileData + '" download="' + msg.fileName + '">📎 ' + msg.fileName + '</a>' + ticks + actions + reactBtn + '</div>';
               } else if (msg.type === "voice") {
                 html = '<div class="msgRow" data-id="' + msg.id + '">' + reply + '<b>' + msg.from + ':</b><br/><audio controls src="' + msg.fileData + '" style="height:32px; max-width:200px;"></audio>' + ticks + actions + reactBtn + '</div>';
+              } else if (msg.type === "location") {
+                let loc = {};
+                try { loc = JSON.parse(msg.fileData); } catch (e) {}
+                const mapId = loc.live ? loc.liveId : "loc-" + msg.id;
+                const liveBadge = loc.live ? '<div id="' + mapId + '-badge" style="font-size:11px; color:#e33; margin-top:2px;">🔴 Live location</div>' : "";
+                html = '<div class="msgRow" data-id="' + msg.id + '">' + reply + '<b>' + msg.from + ':</b><br/>' +
+                  '<div id="' + mapId + '" style="width:200px; height:120px; border-radius:8px; margin-top:4px;" onclick="window.open(\\'https://www.google.com/maps?q=' + loc.lat + ',' + loc.lng + '\\',\\'_blank\\')"></div>' +
+                  liveBadge + ticks + actions + reactBtn + '</div>';
+                box.insertAdjacentHTML("beforeend", html);
+                renderLocationMap(mapId, loc.lat, loc.lng);
+                box.scrollTop = box.scrollHeight;
+                return;
               } else {
                 html = '<div class="msgRow" data-id="' + msg.id + '">' + reply + '<b>' + msg.from + ':</b> <span class="msgText">' + msg.text + '</span>' + ticks + actions + reactBtn + '<button class="reactBtn" onclick="translateMsg(' + msg.id + ')" title="Translate">🌐</button>' + '<div class="translationBox" id="translation-' + msg.id + '" style="display:none;"></div></div>';
               }
@@ -3629,6 +3806,97 @@ const server = http.createServer(async (req, res) => {
               input.value = "";
             }
 
+            // ---- Location sharing ----
+            let liveLocationWatchId = null;
+            let liveLocationId = null;
+            let liveLocationTimeout = null;
+
+            function openLocationPicker() {
+              document.getElementById("locationPickerModal").style.display = "flex";
+            }
+            function closeLocationPicker() {
+              document.getElementById("locationPickerModal").style.display = "none";
+            }
+
+            function shareLocation(isLive) {
+              closeLocationPicker();
+              if (!navigator.geolocation) {
+                alert("Location isn't supported on this device/browser.");
+                return;
+              }
+
+              navigator.geolocation.getCurrentPosition((pos) => {
+                const lat = pos.coords.latitude, lng = pos.coords.longitude;
+
+                if (!isLive) {
+                  socket.emit("chat message", {
+                    room, from: me, to: withBuddy, type: "location",
+                    fileData: JSON.stringify({ lat, lng, live: false })
+                  });
+                  return;
+                }
+
+                liveLocationId = "live-" + Date.now();
+                socket.emit("chat message", {
+                  room, from: me, to: withBuddy, type: "location",
+                  fileData: JSON.stringify({ lat, lng, live: true, liveId: liveLocationId })
+                });
+
+                liveLocationWatchId = navigator.geolocation.watchPosition((p) => {
+                  socket.emit("live-location-update", {
+                    room, liveId: liveLocationId, lat: p.coords.latitude, lng: p.coords.longitude
+                  });
+                }, () => {}, { enableHighAccuracy: true });
+
+                liveLocationTimeout = setTimeout(stopLiveLocation, 15 * 60 * 1000);
+              }, () => {
+                alert("Could not get your location. Please allow location access.");
+              });
+            }
+
+            function stopLiveLocation() {
+              if (liveLocationWatchId !== null) {
+                navigator.geolocation.clearWatch(liveLocationWatchId);
+                liveLocationWatchId = null;
+              }
+              if (liveLocationTimeout) {
+                clearTimeout(liveLocationTimeout);
+                liveLocationTimeout = null;
+              }
+              if (liveLocationId) {
+                socket.emit("live-location-stop", { room, liveId: liveLocationId });
+                liveLocationId = null;
+              }
+            }
+
+            window.addEventListener("beforeunload", stopLiveLocation);
+
+            function renderLocationMap(elementId, lat, lng) {
+              setTimeout(() => {
+                const el = document.getElementById(elementId);
+                if (!el || el.dataset.mapReady) return;
+                el.dataset.mapReady = "1";
+                const map = L.map(elementId, { zoomControl: false, dragging: false, scrollWheelZoom: false, attributionControl: false }).setView([lat, lng], 15);
+                L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png").addTo(map);
+                const marker = L.marker([lat, lng]).addTo(map);
+                el._leafletMap = map;
+                el._leafletMarker = marker;
+              }, 50);
+            }
+
+            socket.on("live-location-update", ({ liveId, lat, lng }) => {
+              const el = document.getElementById(liveId);
+              if (el && el._leafletMap) {
+                el._leafletMap.setView([lat, lng], 15);
+                el._leafletMarker.setLatLng([lat, lng]);
+              }
+            });
+
+            socket.on("live-location-stop", ({ liveId }) => {
+              const badge = document.getElementById(liveId + "-badge");
+              if (badge) badge.textContent = "Live location ended";
+            });
+
             // ---- Edit / Delete messages ----
             function editMsg(id, btn) {
               const row = document.querySelector('.msgRow[data-id="' + id + '"]');
@@ -3868,12 +4136,66 @@ const server = http.createServer(async (req, res) => {
                 }
               };
               pc.ontrack = (event) => {
-                document.getElementById("bigVideo").srcObject = event.streams[0];
+                const bigVideo = document.getElementById("bigVideo");
+                bigVideo.srcObject = event.streams[0];
+                bigVideo.play().catch(() => {}); // some mobile browsers need an explicit play() call
                 stopRingtone();
                 document.getElementById("callStatus").textContent = "In call with " + withBuddy;
+
+                // Detect if the other person's camera/mic actually drops mid-call,
+                // instead of the screen silently going blank with no explanation
+                event.track.onended = () => {
+                  document.getElementById("callStatus").textContent = withBuddy + "'s camera/mic disconnected";
+                };
+                event.track.onmute = () => {
+                  document.getElementById("callStatus").textContent = withBuddy + "'s connection is weak...";
+                };
+                event.track.onunmute = () => {
+                  document.getElementById("callStatus").textContent = "In call with " + withBuddy;
+                };
               };
+
+              pc.oniceconnectionstatechange = () => {
+                const state = pc.iceConnectionState;
+                if (state === "disconnected") {
+                  document.getElementById("callStatus").textContent = "Connection unstable, reconnecting...";
+                } else if (state === "failed") {
+                  attemptIceRestart(pc);
+                } else if (state === "connected" || state === "completed") {
+                  document.getElementById("callStatus").textContent = "In call with " + withBuddy;
+                }
+              };
+
               return pc;
             }
+
+            // If the connection drops mid-call (e.g. WiFi to mobile data switch), the side
+            // that originally sent the offer tries to re-negotiate instead of the call just dying.
+            async function attemptIceRestart(pc) {
+              if (!pc.localDescription || pc.localDescription.type !== "offer") return; // only the original caller restarts
+              try {
+                const offer = await pc.createOffer({ iceRestart: true });
+                await pc.setLocalDescription(offer);
+                socket.emit("ice-restart-offer", { room, offer });
+              } catch (err) {}
+            }
+
+            socket.on("ice-restart-offer", async ({ offer }) => {
+              if (!peerConnection) return;
+              try {
+                await peerConnection.setRemoteDescription(offer);
+                const answer = await peerConnection.createAnswer();
+                await peerConnection.setLocalDescription(answer);
+                socket.emit("ice-restart-answer", { room, answer });
+              } catch (err) {}
+            });
+
+            socket.on("ice-restart-answer", async ({ answer }) => {
+              if (!peerConnection) return;
+              try {
+                await peerConnection.setRemoteDescription(answer);
+              } catch (err) {}
+            });
 
             function showCallScreen() {
               document.getElementById("callArea").style.display = "block";
@@ -4221,6 +4543,13 @@ io.on("connection", (socket) => {
     } else {
       io.to(requesterSocketId).emit("join-denied");
     }
+  });
+
+  socket.on("invite-to-room", ({ room, from, to }) => {
+    // Pre-approve the invited person so they skip the approval popup entirely
+    if (!roomApprovedUsers[room]) roomApprovedUsers[room] = new Set();
+    roomApprovedUsers[room].add(to);
+    io.to("user-" + to).emit("room-invite-received", { room, from });
   });
 
   // ---- Room roster (chat-first landing, no camera needed) ----
@@ -4671,6 +5000,22 @@ io.on("connection", (socket) => {
     socket.to(room).emit("read-updated", { upToId });
   });
 
+  socket.on("live-location-update", ({ room, liveId, lat, lng }) => {
+    socket.to(room).emit("live-location-update", { liveId, lat, lng });
+  });
+
+  socket.on("live-location-stop", ({ room, liveId }) => {
+    socket.to(room).emit("live-location-stop", { liveId });
+  });
+
+  socket.on("group-location-update", ({ room, name, lat, lng }) => {
+    socket.to("room-" + room).emit("group-location-update", { name, lat, lng });
+  });
+
+  socket.on("group-location-stop", ({ room, name }) => {
+    socket.to("room-" + room).emit("group-location-stop", { name });
+  });
+
   socket.on("edit-message", ({ room, id, newText }) => {
     db.prepare("UPDATE messages SET text = ? WHERE id = ?").run(newText, id);
     io.to(room).emit("message-edited", { id, newText });
@@ -4723,6 +5068,14 @@ io.on("connection", (socket) => {
 
   socket.on("ice-candidate", ({ room, candidate }) => {
     socket.to(room).emit("ice-candidate-received", { candidate });
+  });
+
+  socket.on("ice-restart-offer", ({ room, offer }) => {
+    socket.to(room).emit("ice-restart-offer", { offer });
+  });
+
+  socket.on("ice-restart-answer", ({ room, answer }) => {
+    socket.to(room).emit("ice-restart-answer", { answer });
   });
 
   socket.on("hang-up", ({ room }) => {

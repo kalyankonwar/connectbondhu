@@ -259,7 +259,7 @@ function readRequestBody(req) {
     let body = "";
     req.on("data", (chunk) => {
       body += chunk;
-      if (body.length > 2 * 1024 * 1024) req.destroy(); // 2MB safety limit
+      if (body.length > 10 * 1024 * 1024) req.destroy(); // 10MB safety limit
     });
     req.on("end", () => resolve(body));
     req.on("error", reject);
@@ -387,6 +387,31 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
+  if (parsedUrl.pathname === "/api/ice-config") {
+    // Uses real TURN credentials from environment variables if you've set them up
+    // (recommended — the free demo TURN below gets overloaded on mobile networks).
+    // Falls back to the free public demo TURN service otherwise.
+    const iceServers = [{ urls: "stun:stun.l.google.com:19302" }];
+
+    if (process.env.TURN_URL && process.env.TURN_USERNAME && process.env.TURN_CREDENTIAL) {
+      iceServers.push({
+        urls: process.env.TURN_URL,
+        username: process.env.TURN_USERNAME,
+        credential: process.env.TURN_CREDENTIAL
+      });
+    } else {
+      iceServers.push(
+        { urls: "turn:openrelay.metered.ca:80", username: "openrelayproject", credential: "openrelayproject" },
+        { urls: "turn:openrelay.metered.ca:443", username: "openrelayproject", credential: "openrelayproject" },
+        { urls: "turn:openrelay.metered.ca:443?transport=tcp", username: "openrelayproject", credential: "openrelayproject" }
+      );
+    }
+
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ iceServers }));
+    return;
+  }
+
   if (req.method === "POST" && parsedUrl.pathname === "/api/set-zodiac") {
     try {
       const body = JSON.parse(await readRequestBody(req));
@@ -409,7 +434,7 @@ const server = http.createServer(async (req, res) => {
       const body = JSON.parse(await readRequestBody(req));
       const { name, imageData } = body;
       if (!name || !imageData) throw new Error("Missing required fields");
-      if (imageData.length > 2 * 1024 * 1024) throw new Error("Image too large");
+      if (imageData.length > 6 * 1024 * 1024) throw new Error("Image too large");
 
       db.prepare("UPDATE users SET profile_pic = ? WHERE name = ?").run(imageData, name);
 
@@ -565,6 +590,16 @@ const server = http.createServer(async (req, res) => {
           </style>
         </head>
         <body>
+          <script>
+            // If already signed in (and haven't logged out), skip straight to Welcome
+            const savedUser = localStorage.getItem("connectbondhu_user");
+            if (savedUser) {
+              try {
+                const u = JSON.parse(savedUser);
+                window.location.href = "/welcome?name=" + encodeURIComponent(u.name) + "&gender=" + encodeURIComponent(u.gender || "");
+              } catch (e) {}
+            }
+          </script>
           <div class="loginCard">
             <div class="logoCircle">💬</div>
             <h1>ConnectBondhu</h1>
@@ -594,6 +629,7 @@ const server = http.createServer(async (req, res) => {
               const name = document.getElementById("nameBox").value.trim();
               const gender = document.getElementById("genderBox").value;
               if (!name) return;
+              localStorage.setItem("connectbondhu_user", JSON.stringify({ name, gender }));
               window.location.href = "/welcome?name=" + encodeURIComponent(name) + "&gender=" + encodeURIComponent(gender);
             }
             document.getElementById("nameBox").addEventListener("keydown", (e) => {
@@ -788,6 +824,10 @@ const server = http.createServer(async (req, res) => {
                 <span class="buddyAvatar" style="background:#444; color:white;">📄</span>
                 <span class="buddyName">Privacy Policy</span>
               </a>
+              <a class="buddyRow" href="javascript:void(0)" onclick="logoutUser()">
+                <span class="buddyAvatar" style="background:#e33; color:white;">🚪</span>
+                <span class="buddyName">Logout</span>
+              </a>
             </div>
           </div>
 
@@ -814,6 +854,12 @@ const server = http.createServer(async (req, res) => {
           <script>
             const myName = "${name}";
             const myZodiac = "${myZodiacSign}";
+
+            function logoutUser() {
+              if (!confirm("Log out of ConnectBondhu?")) return;
+              localStorage.removeItem("connectbondhu_user");
+              window.location.href = "/";
+            }
 
             async function saveZodiacQuick() {
               const sign = document.getElementById("zodiacQuickSet").value;
@@ -876,8 +922,8 @@ const server = http.createServer(async (req, res) => {
               const input = document.getElementById("profilePicInput");
               const file = input.files[0];
               if (!file) return;
-              if (file.size > 2 * 1024 * 1024) {
-                alert("Please choose an image under 2MB.");
+              if (file.size > 5 * 1024 * 1024) {
+                alert("Please choose an image under 5MB.");
                 input.value = "";
                 return;
               }
@@ -2104,14 +2150,8 @@ const server = http.createServer(async (req, res) => {
             const room = "${room}";
             const socket = io();
 
-            const rtcConfig = {
-              iceServers: [
-                { urls: "stun:stun.l.google.com:19302" },
-                { urls: "turn:openrelay.metered.ca:80", username: "openrelayproject", credential: "openrelayproject" },
-                { urls: "turn:openrelay.metered.ca:443", username: "openrelayproject", credential: "openrelayproject" },
-                { urls: "turn:openrelay.metered.ca:443?transport=tcp", username: "openrelayproject", credential: "openrelayproject" }
-              ]
-            };
+            let rtcConfig = { iceServers: [{ urls: "stun:stun.l.google.com:19302" }] }; // temporary default until loaded
+            fetch("/api/ice-config").then((r) => r.json()).then((cfg) => { rtcConfig = cfg; }).catch(() => {});
 
             let localStream = null;
             const peers = {}; // socketId -> RTCPeerConnection
@@ -4056,14 +4096,8 @@ const server = http.createServer(async (req, res) => {
             let camOff = false;
             let currentFacingMode = "user"; // starts on front camera
 
-            const rtcConfig = {
-              iceServers: [
-                { urls: "stun:stun.l.google.com:19302" },
-                { urls: "turn:openrelay.metered.ca:80", username: "openrelayproject", credential: "openrelayproject" },
-                { urls: "turn:openrelay.metered.ca:443", username: "openrelayproject", credential: "openrelayproject" },
-                { urls: "turn:openrelay.metered.ca:443?transport=tcp", username: "openrelayproject", credential: "openrelayproject" }
-              ]
-            };
+            let rtcConfig = { iceServers: [{ urls: "stun:stun.l.google.com:19302" }] }; // temporary default until loaded
+            fetch("/api/ice-config").then((r) => r.json()).then((cfg) => { rtcConfig = cfg; }).catch(() => {});
 
             function playRingtone() {
               stopRingtone();
@@ -4155,13 +4189,22 @@ const server = http.createServer(async (req, res) => {
                 };
               };
 
+              let disconnectTimer = null;
               pc.oniceconnectionstatechange = () => {
                 const state = pc.iceConnectionState;
                 if (state === "disconnected") {
-                  document.getElementById("callStatus").textContent = "Connection unstable, reconnecting...";
+                  // Brief blips often self-heal within a couple seconds — only alarm the
+                  // user if it's still disconnected after a short delay.
+                  disconnectTimer = setTimeout(() => {
+                    if (pc.iceConnectionState === "disconnected") {
+                      document.getElementById("callStatus").textContent = "Connection unstable, reconnecting...";
+                    }
+                  }, 2500);
                 } else if (state === "failed") {
+                  clearTimeout(disconnectTimer);
                   attemptIceRestart(pc);
                 } else if (state === "connected" || state === "completed") {
+                  clearTimeout(disconnectTimer);
                   document.getElementById("callStatus").textContent = "In call with " + withBuddy;
                 }
               };

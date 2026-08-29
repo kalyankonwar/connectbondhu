@@ -3349,9 +3349,13 @@ const server = http.createServer(async (req, res) => {
             #smallVideo { position:absolute; width:110px; height:150px; object-fit:cover; top:20px; right:20px; border-radius:10px; border:2px solid white; background:#333; box-shadow:0 2px 8px rgba(0,0,0,0.5); }
             #camOffOverlay { display:none; position:absolute; width:110px; height:150px; top:20px; right:20px; border-radius:10px; background:#222; color:white; font-size:12px; align-items:center; justify-content:center; text-align:center; }
             #callStatus { position:absolute; top:20px; left:20px; color:#ffd966; font-size:15px; background:rgba(0,0,0,0.4); padding:4px 10px; border-radius:6px; }
-            #callControls { position:absolute; bottom:30px; left:50%; transform:translateX(-50%); display:flex; gap:14px; }
-            .callBtn { border:none; padding:14px 22px; border-radius:30px; font-size:15px; color:white; }
-            #hangUpBtn { background:#e33; }
+            #callControls {
+              position:absolute; bottom:16px; left:50%; transform:translateX(-50%);
+              display:flex; flex-wrap:wrap; justify-content:center; gap:8px;
+              width:94%; max-width:340px;
+            }
+            .callBtn { border:none; padding:11px 14px; border-radius:22px; font-size:13px; color:white; white-space:nowrap; }
+            #hangUpBtn { background:#e33; order:99; } /* Hang Up always shows last, in its own row if needed */
             #muteBtn, #camBtn { background:#444; }
             .callBtn.off { background:#e33; }
 
@@ -3445,7 +3449,7 @@ const server = http.createServer(async (req, res) => {
               <button class="callBtn" onclick="toggleVoiceFilterPicker()" style="background:#444;">🎭 Voice</button>
               <button id="hangUpBtn" class="callBtn" onclick="hangUp(true)">Hang Up</button>
             </div>
-            <div id="voiceFilterPicker" style="display:none; position:absolute; bottom:90px; left:50%; transform:translateX(-50%); background:rgba(0,0,0,0.7); border-radius:12px; padding:8px; display:none; gap:6px;">
+            <div id="voiceFilterPicker" style="display:none; position:absolute; bottom:110px; left:50%; transform:translateX(-50%); background:rgba(0,0,0,0.7); border-radius:12px; padding:8px; display:none; gap:6px; flex-wrap:wrap; justify-content:center; max-width:90%;">
               <button onclick="applyVoiceFilter('normal')" style="padding:8px 12px; border:none; border-radius:10px; background:#333; color:white; font-size:12px;">Normal</button>
               <button onclick="applyVoiceFilter('robot')" style="padding:8px 12px; border:none; border-radius:10px; background:#333; color:white; font-size:12px;">🤖 Robot</button>
               <button onclick="applyVoiceFilter('deep')" style="padding:8px 12px; border:none; border-radius:10px; background:#333; color:white; font-size:12px;">🎙️ Deep</button>

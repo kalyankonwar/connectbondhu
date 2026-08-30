@@ -394,16 +394,25 @@ const server = http.createServer(async (req, res) => {
     const iceServers = [{ urls: "stun:stun.l.google.com:19302" }];
 
     if (process.env.METERED_DOMAIN && process.env.TURN_USERNAME && process.env.TURN_PASSWORD) {
-      // Build the standard 4 TURN URLs from a Metered domain (e.g. standard.relay.metered.ca)
-      const domain = process.env.METERED_DOMAIN;
+      const domainValue = process.env.METERED_DOMAIN.trim();
       const uname = process.env.TURN_USERNAME;
       const pass = process.env.TURN_PASSWORD;
-      iceServers.push(
-        { urls: `turn:${domain}:80`, username: uname, credential: pass },
-        { urls: `turn:${domain}:80?transport=tcp`, username: uname, credential: pass },
-        { urls: `turn:${domain}:443`, username: uname, credential: pass },
-        { urls: `turns:${domain}:443?transport=tcp`, username: uname, credential: pass }
-      );
+
+      if (domainValue.includes("turn:") || domainValue.includes(",")) {
+        // A full list of TURN URLs was pasted in here (possibly comma-separated) rather than a bare domain
+        const urls = domainValue.split(",").map((u) => u.trim()).filter(Boolean);
+        urls.forEach((url) => {
+          iceServers.push({ urls: url, username: uname, credential: pass });
+        });
+      } else {
+        // A bare domain like "global.relay.metered.ca" — build the standard 4 TURN URLs from it
+        iceServers.push(
+          { urls: `turn:${domainValue}:80`, username: uname, credential: pass },
+          { urls: `turn:${domainValue}:80?transport=tcp`, username: uname, credential: pass },
+          { urls: `turn:${domainValue}:443`, username: uname, credential: pass },
+          { urls: `turns:${domainValue}:443?transport=tcp`, username: uname, credential: pass }
+        );
+      }
     } else if (process.env.TURN_URLS && process.env.TURN_USERNAME && process.env.TURN_CREDENTIAL) {
       // TURN_URLS can be a comma-separated list, e.g. from Metered's "Show ICE Servers Array"
       const urls = process.env.TURN_URLS.split(",").map((u) => u.trim()).filter(Boolean);

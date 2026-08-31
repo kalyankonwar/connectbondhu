@@ -2180,8 +2180,9 @@ const server = http.createServer(async (req, res) => {
             const room = "${room}";
             const socket = io();
 
-            let rtcConfig = { iceServers: [{ urls: "stun:stun.l.google.com:19302" }] }; // temporary default until loaded
-            fetch("/api/ice-config").then((r) => r.json()).then((cfg) => { rtcConfig = cfg; }).catch(() => {});
+            let rtcConfigPromise = fetch("/api/ice-config")
+              .then((r) => r.json())
+              .catch(() => ({ iceServers: [{ urls: "stun:stun.l.google.com:19302" }] }));
 
             let localStream = null;
             const peers = {}; // socketId -> RTCPeerConnection
@@ -2215,8 +2216,9 @@ const server = http.createServer(async (req, res) => {
               if (tile) tile.remove();
             }
 
-            function createPeerConnection(peerId, peerName, peerGender) {
-              const pc = new RTCPeerConnection(rtcConfig);
+            async function createPeerConnection(peerId, peerName, peerGender) {
+              const config = await rtcConfigPromise;
+              const pc = new RTCPeerConnection(config);
               peerGenders[peerId] = peerGender;
 
               pc.onicecandidate = (event) => {
@@ -2277,7 +2279,7 @@ const server = http.createServer(async (req, res) => {
             // Existing people already in the room -> call each of them
             socket.on("existing-peers", async (peerList) => {
               for (const peer of peerList) {
-                const pc = createPeerConnection(peer.id, peer.name, peer.gender);
+                const pc = await createPeerConnection(peer.id, peer.name, peer.gender);
                 const offer = await pc.createOffer();
                 await pc.setLocalDescription(offer);
                 socket.emit("group-offer", { to: peer.id, from: socket.id, offer, name: me, gender: myGender });
@@ -2290,7 +2292,7 @@ const server = http.createServer(async (req, res) => {
             });
 
             socket.on("group-offer", async ({ from, offer, name, gender }) => {
-              const pc = createPeerConnection(from, name, gender);
+              const pc = await createPeerConnection(from, name, gender);
               await pc.setRemoteDescription(offer);
               const answer = await pc.createAnswer();
               await pc.setLocalDescription(answer);
@@ -2962,8 +2964,9 @@ const server = http.createServer(async (req, res) => {
               socket.emit("join-private", { privateRoom: privateRoomId, name: me });
             }
 
-            function createPrivatePeerConnection(peerId) {
-              const pc = new RTCPeerConnection(rtcConfig);
+            async function createPrivatePeerConnection(peerId) {
+              const config = await rtcConfigPromise;
+              const pc = new RTCPeerConnection(config);
               pc.onicecandidate = (event) => {
                 if (event.candidate) {
                   socket.emit("private-ice-candidate", { to: peerId, from: socket.id, candidate: event.candidate });
@@ -2981,7 +2984,7 @@ const server = http.createServer(async (req, res) => {
 
             socket.on("private-existing-peers", async (peerList) => {
               for (const peer of peerList) {
-                const pc = createPrivatePeerConnection(peer.id);
+                const pc = await createPrivatePeerConnection(peer.id);
                 const offer = await pc.createOffer();
                 await pc.setLocalDescription(offer);
                 socket.emit("private-offer", { to: peer.id, from: socket.id, offer, name: me });
@@ -2993,7 +2996,7 @@ const server = http.createServer(async (req, res) => {
             });
 
             socket.on("private-offer", async ({ from, offer }) => {
-              const pc = createPrivatePeerConnection(from);
+              const pc = await createPrivatePeerConnection(from);
               await pc.setRemoteDescription(offer);
               const answer = await pc.createAnswer();
               await pc.setLocalDescription(answer);
@@ -4130,8 +4133,9 @@ const server = http.createServer(async (req, res) => {
             let camOff = false;
             let currentFacingMode = "user"; // starts on front camera
 
-            let rtcConfig = { iceServers: [{ urls: "stun:stun.l.google.com:19302" }] }; // temporary default until loaded
-            fetch("/api/ice-config").then((r) => r.json()).then((cfg) => { rtcConfig = cfg; }).catch(() => {});
+            let rtcConfigPromise = fetch("/api/ice-config")
+              .then((r) => r.json())
+              .catch(() => ({ iceServers: [{ urls: "stun:stun.l.google.com:19302" }] }));
 
             function playRingtone() {
               stopRingtone();
@@ -4196,8 +4200,9 @@ const server = http.createServer(async (req, res) => {
               }
             }
 
-            function createPeerConnection() {
-              const pc = new RTCPeerConnection(rtcConfig);
+            async function createPeerConnection() {
+              const config = await rtcConfigPromise;
+              const pc = new RTCPeerConnection(config);
               pc.onicecandidate = (event) => {
                 if (event.candidate) {
                   socket.emit("ice-candidate", { room, candidate: event.candidate });
@@ -4291,7 +4296,7 @@ const server = http.createServer(async (req, res) => {
               const stream = await getLocalStream(callMode);
               document.getElementById("smallVideo").srcObject = stream;
 
-              peerConnection = createPeerConnection();
+              peerConnection = await createPeerConnection();
               stream.getTracks().forEach((track) => peerConnection.addTrack(track, stream));
 
               const offer = await peerConnection.createOffer();
@@ -4350,7 +4355,7 @@ const server = http.createServer(async (req, res) => {
               const stream = await getLocalStream(callMode);
               document.getElementById("smallVideo").srcObject = stream;
 
-              peerConnection = createPeerConnection();
+              peerConnection = await createPeerConnection();
               stream.getTracks().forEach((track) => peerConnection.addTrack(track, stream));
 
               await peerConnection.setRemoteDescription(window.incomingOffer);

@@ -3454,11 +3454,13 @@ const server = http.createServer(async (req, res) => {
             <div id="audioCallAvatar"></div>
             <div id="camOffOverlay">Camera off</div>
             <p id="callStatus"></p>
+            <div id="callDebugPanel" style="display:none; position:absolute; top:60px; left:16px; right:16px; background:rgba(0,0,0,0.8); color:#0f0; font-family:monospace; font-size:11px; padding:10px; border-radius:8px; white-space:pre-wrap; max-height:200px; overflow-y:auto;"></div>
             <div id="callControls">
               <button id="muteBtn" class="callBtn" onclick="toggleMute()">Mute</button>
               <button id="camBtn" class="callBtn" onclick="toggleCamera()">Camera Off</button>
               <button id="switchCamBtn" class="callBtn" onclick="switchCamera()">Switch Cam</button>
               <button class="callBtn" onclick="toggleVoiceFilterPicker()" style="background:#444;">🎭 Voice</button>
+              <button class="callBtn" onclick="toggleDebugPanel()" style="background:#444;">🔧 Debug</button>
               <button id="hangUpBtn" class="callBtn" onclick="hangUp(true)">Hang Up</button>
             </div>
             <div id="voiceFilterPicker" style="display:none; position:absolute; bottom:110px; left:50%; transform:translateX(-50%); background:rgba(0,0,0,0.7); border-radius:12px; padding:8px; display:none; gap:6px; flex-wrap:wrap; justify-content:center; max-width:90%;">
@@ -4452,6 +4454,67 @@ const server = http.createServer(async (req, res) => {
             // ---- Voice Filters (real-time audio effects on outgoing call audio) ----
             let voiceFilterCtx = null;
 
+            // ---- Call diagnostics (helps debug connection issues from a screenshot) ----
+            let debugPanelInterval = null;
+
+            function toggleDebugPanel() {
+              const panel = document.getElementById("callDebugPanel");
+              const isOpen = panel.style.display === "block";
+              if (isOpen) {
+                panel.style.display = "none";
+                clearInterval(debugPanelInterval);
+              } else {
+                panel.style.display = "block";
+                updateDebugPanel();
+                debugPanelInterval = setInterval(updateDebugPanel, 2000);
+              }
+            }
+
+            async function updateDebugPanel() {
+              const panel = document.getElementById("callDebugPanel");
+              if (!peerConnection) {
+                panel.textContent = "No active call connection.";
+                return;
+              }
+
+              let lines = [];
+              lines.push("ICE state: " + peerConnection.iceConnectionState);
+              lines.push("Connection state: " + peerConnection.connectionState);
+              lines.push("Signaling state: " + peerConnection.signalingState);
+
+              const localAudioTracks = localStream ? localStream.getAudioTracks() : [];
+              const localVideoTracks = localStream ? localStream.getVideoTracks() : [];
+              lines.push("My mic track: " + (localAudioTracks.length ? (localAudioTracks[0].enabled ? "on" : "muted") : "MISSING"));
+              lines.push("My camera track: " + (localVideoTracks.length ? (localVideoTracks[0].enabled ? "on" : "off") : "MISSING (audio-only call?)"));
+
+              const remoteStream = document.getElementById("bigVideo").srcObject;
+              const remoteAudio = remoteStream ? remoteStream.getAudioTracks() : [];
+              const remoteVideo = remoteStream ? remoteStream.getVideoTracks() : [];
+              lines.push("Their mic track received: " + (remoteAudio.length ? "yes" : "NO"));
+              lines.push("Their camera track received: " + (remoteVideo.length ? "yes" : "NO"));
+
+              try {
+                const stats = await peerConnection.getStats();
+                let candidateType = "unknown";
+                let bytesReceived = 0;
+                stats.forEach((report) => {
+                  if (report.type === "candidate-pair" && report.state === "succeeded" && report.nominated) {
+                    const localCand = stats.get(report.localCandidateId);
+                    if (localCand) candidateType = localCand.candidateType;
+                  }
+                  if (report.type === "inbound-rtp" && report.kind === "video") {
+                    bytesReceived = report.bytesReceived || 0;
+                  }
+                });
+                lines.push("Connection type: " + candidateType + " (relay = using TURN, srflx/host = direct)");
+                lines.push("Video bytes received: " + bytesReceived);
+              } catch (err) {
+                lines.push("Stats unavailable: " + err.message);
+              }
+
+              panel.textContent = lines.join("\\n");
+            }
+
             function toggleVoiceFilterPicker() {
               const picker = document.getElementById("voiceFilterPicker");
               picker.style.display = picker.style.display === "flex" ? "none" : "flex";
@@ -4514,6 +4577,8 @@ const server = http.createServer(async (req, res) => {
             function hangUp(notifyOther) {
               stopRingtone();
               isCallingOut = false;
+              clearInterval(debugPanelInterval);
+              document.getElementById("callDebugPanel").style.display = "none";
               if (voiceFilterCtx) {
                 voiceFilterCtx.close();
                 voiceFilterCtx = null;

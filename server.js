@@ -388,10 +388,14 @@ const server = http.createServer(async (req, res) => {
   }
 
   if (parsedUrl.pathname === "/api/ice-config") {
-    // Uses real TURN credentials from environment variables if you've set them up
-    // (recommended — the free demo TURN below gets overloaded on mobile networks).
-    // Falls back to the free public demo TURN service otherwise.
-    const iceServers = [{ urls: "stun:stun.l.google.com:19302" }];
+    // Uses real TURN credentials from environment variables if you've set them up,
+    // PLUS the free demo TURN service as extra redundancy — if one provider is
+    // blocked or unreachable on a given network, the other may still get through.
+    const iceServers = [
+      { urls: "stun:stun.l.google.com:19302" },
+      { urls: "stun:stun1.l.google.com:19302" },
+      { urls: "stun:stun.relay.metered.ca:80" }
+    ];
 
     if (process.env.METERED_DOMAIN && process.env.TURN_USERNAME && process.env.TURN_PASSWORD) {
       const domainValue = process.env.METERED_DOMAIN.trim();
@@ -429,16 +433,18 @@ const server = http.createServer(async (req, res) => {
         username: process.env.TURN_USERNAME,
         credential: process.env.TURN_CREDENTIAL
       });
-    } else {
-      iceServers.push(
-        { urls: "turn:openrelay.metered.ca:80", username: "openrelayproject", credential: "openrelayproject" },
-        { urls: "turn:openrelay.metered.ca:443", username: "openrelayproject", credential: "openrelayproject" },
-        { urls: "turn:openrelay.metered.ca:443?transport=tcp", username: "openrelayproject", credential: "openrelayproject" }
-      );
     }
 
+    // Always add the free demo TURN too, as a second, independent provider —
+    // in case your primary TURN is blocked or unreachable on this network.
+    iceServers.push(
+      { urls: "turn:openrelay.metered.ca:80", username: "openrelayproject", credential: "openrelayproject" },
+      { urls: "turn:openrelay.metered.ca:443", username: "openrelayproject", credential: "openrelayproject" },
+      { urls: "turn:openrelay.metered.ca:443?transport=tcp", username: "openrelayproject", credential: "openrelayproject" }
+    );
+
     res.writeHead(200, { "Content-Type": "application/json" });
-    res.end(JSON.stringify({ iceServers }));
+    res.end(JSON.stringify({ iceServers, iceCandidatePoolSize: 4 }));
     return;
   }
 
